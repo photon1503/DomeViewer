@@ -35,7 +35,7 @@ let nextScopeId = 2;
 const globalControls = [
   { key: "domeRadiusMm", label: "Dome Radius (mm)", min: 500, max: 12000, step: 10 },
   { key: "slitWidthMm", label: "Slit Width (mm)", min: 100, max: 20000, step: 10 },
-  { key: "maxSlitOpeningDeg", label: "Max Slit Opening (deg)", min: 5, max: 85, step: 1 },
+  { key: "maxSlitOpeningDeg", label: "Shutter Vertical Limit (deg)", min: 5, max: 85, step: 1 },
   { key: "slitWallHeightMm", label: "Slit Wall Height (mm)", min: 300, max: 12000, step: 10 },
   { key: "azToleranceDeg", label: "Azimuth Tolerance (deg)", min: 0, max: 30, step: 1 },
   { key: "latitudeDeg", label: "Latitude (deg)", min: -89, max: 89, step: 0.1 },
@@ -95,7 +95,7 @@ function computeSlitOpeningDeg() {
   const radius = Math.max(1, state.domeRadiusMm);
   const width = Math.max(0, state.slitWidthMm);
   const raw = (width / radius) * (180 / Math.PI);
-  return clamp(raw, 0, state.maxSlitOpeningDeg);
+  return clamp(raw, 0, 170);
 }
 
 function getEffectiveSlitWidthMm() {
@@ -117,6 +117,138 @@ function getDomeTargetAzimuthDeg() {
 
 function getDomeAzimuthDeg() {
   return normalizeHeading(runtime.currentDomeAzimuthDeg);
+}
+
+function solveQuadraticPositive(A, B, C) {
+  if (Math.abs(A) < 1e-9) return [];
+  const disc = B * B - 4 * A * C;
+  if (disc < 0) return [];
+  const root = Math.sqrt(disc);
+  const t1 = (-B - root) / (2 * A);
+  const t2 = (-B + root) / (2 * A);
+  return [t1, t2].filter((t) => Number.isFinite(t) && t > 1e-6).sort((a, b) => a - b);
+}
+
+function getScopeOpticalRay(scope) {
+  const up = v3(0, 0, 1);
+  const mount = v3(scope.posEW, scope.posNS, scope.posUD);
+  const az = degToRad(scope.azimuth);
+  const el = degToRad(scope.elevation);
+  const horiz = v3(Math.sin(az), Math.cos(az), 0);
+  const optical = v3Norm(v3Add(v3Scale(horiz, Math.cos(el)), v3(0, 0, Math.sin(el))));
+
+  if (scope.mountType === "EQ") {
+    const latAbs = degToRad(clamp(Math.abs(state.latitudeDeg), 0, 89.5));
+    const hemiSign = state.latitudeDeg >= 0 ? 1 : -1;
+    const raUnit = v3Norm(v3(0, hemiSign * Math.cos(latAbs), Math.sin(latAbs)));
+    let decUnit = v3Norm(v3Cross(raUnit, up));
+    if (Math.hypot(decUnit.x, decUnit.y, decUnit.z) < 1e-6) decUnit = v3(1, 0, 0);
+
+    const raLen = Math.max(120, scope.gemAxisLength);
+    const raHead = v3Add(mount, v3Scale(raUnit, raLen));
+    const decHalf = Math.max(80, scope.lateralAxisLength * 0.5);
+    const decA = v3Add(raHead, v3Scale(decUnit, decHalf));
+    const decB = v3Add(raHead, v3Scale(decUnit, -decHalf));
+    const saddle = v3Dot(optical, decUnit) >= 0 ? decA : decB;
+    return { origin: saddle, dir: optical };
+  }
+
+  const azHead = v3(mount.x, mount.y, mount.z + Math.max(110, scope.gemAxisLength * 0.45));
+  return { origin: azHead, dir: optical };
+}
+
+function intersectRayWithDome(origin, dir, radiusMm) {
+  const hits = [];
+
+  const Axy = dir.x * dir.x + dir.y * dir.y;
+  const Bxy = 2 * (origin.x * dir.x + origin.y * dir.y);
+  const Cxy = origin.x * origin.x + origin.y * origin.y - radiusMm * radiusMm;
+  const wallTs = solveQuadraticPositive(Axy, Bxy, Cxy);
+  for (const t of wallTs) {
+    const z = origin.z + dir.z * t;
+    if (z >= -1e-6 && z <= radiusMm + 1e-6) hits.push(t);
+  }
+
+  const oz = origin.z - radiusMm;
+  const As = dir.x * dir.x + dir.y * dir.y + dir.z * dir.z;
+  const Bs = 2 * (origin.x * dir.x + origin.y * dir.y + oz * dir.z);
+  const Cs = origin.x * origin.x + origin.y * origin.y + oz * oz - radiusMm * radiusMm;
+  const capTs = solveQuadraticPositive(As, Bs, Cs);
+  for (const t of capTs) {
+    const z = origin.z + dir.z * t;
+    if (z >= radiusMm - 1e-6 && z <= 2 * radiusMm + 1e-6) hits.push(t);
+  }
+
+  if (hits.length === 0) return null;
+  const t = hits.sort((a, b) => a - b)[0];
+  return v3(origin.x + dir.x * t, origin.y + dir.y * t, origin.z + dir.z * t);
+}
+
+function isPointInsideSlit(point, domeAzimuthDeg, slitWidthMm, radiusMm, toleranceDeg) {
+  if (point.z < -1e-6 || point.z > 2 * radiusMm + 1e-6) return false;
+
+  const r = point.z <= radiusMm ? radiusMm : domeRadiusAtHeight(point.z, radiusMm);
+  if (r < 1) return false;
+
+  const az = degToRad(domeAzimuthDeg);
+  const dirX = Math.sin(az);
+  const dirY = Math.cos(az);
+  const tanX = Math.cos(az);
+  const tanY = -Math.sin(az);
+
+  const cx = dirX * r;
+  const cy = dirY * r;
+  const dx = point.x - cx;
+  const dy = point.y - cy;
+  const tangentialOffset = dx * tanX + dy * tanY;
+
+  const halfWidth = Math.min(slitWidthMm * 0.5, r * 0.96);
+  const tolMm = r * degToRad(Math.max(0, toleranceDeg));
+  return Math.abs(tangentialOffset) <= halfWidth + tolMm;
+}
+
+function evaluateScopeSlitVisibility(scope) {
+  const domeAz = getDomeAzimuthDeg();
+  const heading = normalizeHeading(scope.azimuth);
+  const rel = signedDeltaDeg(heading, domeAz);
+  const azPass = inSlit(rel, computeSlitOpeningDeg(), state.azToleranceDeg);
+
+  if (scope.elevation > state.maxSlitOpeningDeg + 1e-6) {
+    return {
+      clear: false,
+      reason: `Blocked: elevation ${scope.elevation.toFixed(1)} deg exceeds shutter limit ${state.maxSlitOpeningDeg.toFixed(1)} deg`
+    };
+  }
+
+  const ray = getScopeOpticalRay(scope);
+  const hit = intersectRayWithDome(ray.origin, ray.dir, state.domeRadiusMm);
+
+  if (!hit) {
+    return {
+      clear: azPass,
+      reason: azPass ? "Inside slit window" : "Blocked: outside slit azimuth window"
+    };
+  }
+
+  const slitPass = isPointInsideSlit(
+    hit,
+    domeAz,
+    getEffectiveSlitWidthMm(),
+    state.domeRadiusMm,
+    state.azToleranceDeg
+  );
+
+  if (!azPass || !slitPass) {
+    return {
+      clear: false,
+      reason: "Blocked: line of sight hits dome outside slit"
+    };
+  }
+
+  return {
+    clear: true,
+    reason: "Inside slit window"
+  };
 }
 
 function syncDomeNow() {
@@ -253,7 +385,7 @@ function domeRadiusAtHeight(zMm, radiusMm) {
   return Math.sqrt(Math.max(0, radiusMm * radiusMm - dz * dz));
 }
 
-function buildDomeSlitRibbon3D(radiusMm, slitAzDeg, slitWidthMm, wallHeightMm, samples = 48) {
+function buildDomeSlitRibbon3D(radiusMm, slitAzDeg, slitWidthMm, wallHeightMm, shutterLimitDeg, samples = 48) {
   const az = degToRad(slitAzDeg);
   const dirX = Math.sin(az);
   const dirY = Math.cos(az);
@@ -278,9 +410,10 @@ function buildDomeSlitRibbon3D(radiusMm, slitAzDeg, slitWidthMm, wallHeightMm, s
   }
 
   const capSamples = Math.max(8, samples);
+  const zCapMax = radiusMm + radiusMm * Math.sin(degToRad(clamp(shutterLimitDeg, 0, 90)));
   for (let i = 0; i <= capSamples; i += 1) {
     const t = i / capSamples;
-    const z = wallTop + t * (2 * radiusMm - wallTop);
+    const z = wallTop + t * (zCapMax - wallTop);
     const r = domeRadiusAtHeight(z, radiusMm);
     if (r < 1) continue;
     const half = Math.min(slitWidthMm * 0.5, r * 0.96);
@@ -348,14 +481,15 @@ function buildMountScopeScene3D() {
         diameterMm: Math.max(48, scope.telescopeDiameterMm),
         fill: scopeFill,
         stroke: color,
-        swMm: 8
+        swMm: 8,
+        isTube: true
       });
       rods.push({ a: mount, b: cwStart, diameterMm: 62, fill: "rgba(206,219,239,0.55)", stroke: "rgba(236,245,255,0.95)", swMm: 7 });
       rods.push({ a: cwStart, b: cwEnd, diameterMm: 38, fill: "rgba(225,236,249,0.62)", stroke: "rgba(244,250,255,0.98)", swMm: 6 });
 
       circles.push({ c: mount, rMm: 70, stroke: "rgba(230,240,255,0.85)", fill: "rgba(114,137,175,0.32)", swMm: 14 });
       circles.push({ c: raHead, rMm: 40, stroke: "rgba(227,240,255,0.9)", fill: "rgba(173,199,236,0.45)", swMm: 8 });
-      circles.push({ c: tubeFront, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.26)", swMm: 8 });
+      circles.push({ c: tubeFront, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.26)", swMm: 8, isAperture: true });
       circles.push({ c: cwEnd, rMm: 55, stroke: "rgba(240,248,255,0.95)", fill: "rgba(217,229,248,0.72)", swMm: 8 });
       circles.push({ c: cwMid, rMm: 42, stroke: "rgba(240,248,255,0.95)", fill: "rgba(217,229,248,0.72)", swMm: 8 });
 
@@ -381,11 +515,12 @@ function buildMountScopeScene3D() {
         diameterMm: Math.max(48, scope.telescopeDiameterMm),
         fill: scopeFill,
         stroke: color,
-        swMm: 8
+        swMm: 8,
+        isTube: true
       });
 
       circles.push({ c: mount, rMm: 70, stroke: "rgba(230,240,255,0.85)", fill: "rgba(114,137,175,0.32)", swMm: 14 });
-      circles.push({ c: tubeFront, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.28)", swMm: 8 });
+      circles.push({ c: tubeFront, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.28)", swMm: 8, isAperture: true });
     }
 
     labels.push({ p: mount, text: scope.name, color });
@@ -412,6 +547,10 @@ function strokePxFromMm(mm, scale, minPx = 1) {
 
 function radiusPxFromMm(mm, scale, minPx = 2) {
   return Math.max(minPx, mm * scale * 0.16);
+}
+
+function tubePxFromMm(mm, scale, minPx = 4) {
+  return Math.max(minPx, mm * scale * 0.75);
 }
 
 function hexToRgba(hex, alpha = 1) {
@@ -510,7 +649,7 @@ function renderSceneTop(svg, scene, cx, cy, scale) {
         svg,
         a,
         b,
-        strokePxFromMm(rod.diameterMm, scale, 4),
+        rod.isTube ? tubePxFromMm(rod.diameterMm, scale, 4) : strokePxFromMm(rod.diameterMm, scale, 4),
         rod.fill,
         rod.stroke,
         strokePxFromMm(rod.swMm ?? 8, scale, 1)
@@ -523,7 +662,7 @@ function renderSceneTop(svg, scene, cx, cy, scale) {
         svgEl("circle", {
           cx: p.x,
           cy: p.y,
-          r: radiusPxFromMm(c.rMm, scale, 2.4),
+          r: c.isAperture ? tubePxFromMm(c.rMm * 2, scale, 3) * 0.5 : radiusPxFromMm(c.rMm, scale, 2.4),
           fill: c.fill,
           stroke: c.stroke,
           "stroke-width": strokePxFromMm(c.swMm, scale, 1)
@@ -548,7 +687,7 @@ function renderSceneSide(svg, scene, sideRot, xToPx, zToPx, scale) {
         svg,
         a,
         b,
-        strokePxFromMm(rod.diameterMm, scale, 4),
+        rod.isTube ? tubePxFromMm(rod.diameterMm, scale, 4) : strokePxFromMm(rod.diameterMm, scale, 4),
         rod.fill,
         rod.stroke,
         strokePxFromMm(rod.swMm ?? 8, scale, 1)
@@ -561,7 +700,7 @@ function renderSceneSide(svg, scene, sideRot, xToPx, zToPx, scale) {
         svgEl("circle", {
           cx: p.x,
           cy: p.y,
-          r: radiusPxFromMm(c.rMm, scale, 2.2),
+          r: c.isAperture ? tubePxFromMm(c.rMm * 2, scale, 3) * 0.5 : radiusPxFromMm(c.rMm, scale, 2.2),
           fill: c.fill,
           stroke: c.stroke,
           "stroke-width": strokePxFromMm(c.swMm, scale, 1)
@@ -628,6 +767,7 @@ function drawTopView() {
     domeAzimuthDeg,
     getEffectiveSlitWidthMm(),
     state.slitWallHeightMm,
+    state.maxSlitOpeningDeg,
     36
   );
   const topLeft = slitRibbon.leftCap.map((pt) => projectTopPt(pt, cx, cy, scale));
@@ -661,12 +801,10 @@ function drawTopView() {
   const scene = buildMountScopeScene3D();
   renderSceneTop(svg, scene, cx, cy, scale);
 
-  const rawSlitDeg = (Math.max(0, state.slitWidthMm) / Math.max(1, state.domeRadiusMm)) * (180 / Math.PI);
-  const isCapped = rawSlitDeg > state.maxSlitOpeningDeg + 0.0001;
   const domeTarget = getDomeTargetAzimuthDeg();
   const domeErr = Math.abs(signedDeltaDeg(domeTarget, domeAzimuthDeg));
   const info = svgEl("text", { x: cx, y: cy - domePx + 22, fill: "#c7d5e8", "font-size": 12, "text-anchor": "middle" });
-  info.textContent = `Slit ${state.slitWidthMm.toFixed(0)} mm (${slitOpeningDeg.toFixed(1)} deg${isCapped ? " capped" : ""}) @ ${domeAzimuthDeg.toFixed(0)} deg ${state.simulateDomeSlew ? `(target ${domeTarget.toFixed(0)} deg, err ${domeErr.toFixed(1)} deg)` : ""}`;
+  info.textContent = `Slit ${state.slitWidthMm.toFixed(0)} mm (${slitOpeningDeg.toFixed(1)} deg az width), shutter limit ${state.maxSlitOpeningDeg.toFixed(0)} deg @ ${domeAzimuthDeg.toFixed(0)} deg ${state.simulateDomeSlew ? `(target ${domeTarget.toFixed(0)} deg, err ${domeErr.toFixed(1)} deg)` : ""}`;
   svg.append(info);
 }
 
@@ -732,6 +870,7 @@ function drawSideView() {
     domeAzimuthDeg,
     getEffectiveSlitWidthMm(),
     state.slitWallHeightMm,
+    state.maxSlitOpeningDeg,
     36
   );
 
@@ -785,17 +924,15 @@ function drawDiagnostics() {
     row.className = "diag-line";
 
     const heading = normalizeHeading(scope.azimuth);
-    const domeAz = getDomeAzimuthDeg();
-    const rel = signedDeltaDeg(heading, domeAz);
-    const slitOk = inSlit(rel, computeSlitOpeningDeg(), state.azToleranceDeg);
+    const visibility = evaluateScopeSlitVisibility(scope);
 
     const left = document.createElement("span");
     left.style.color = palette[idx % palette.length];
     left.textContent = `${scope.name}: Az ${heading.toFixed(0)} deg, El ${scope.elevation.toFixed(0)} deg, D ${scope.telescopeDiameterMm.toFixed(0)} mm, L ${scope.tubeLengthMm.toFixed(0)} mm`;
 
     const right = document.createElement("span");
-    right.className = slitOk ? "diag-ok" : "diag-warn";
-    right.textContent = slitOk ? "Inside slit window" : "Outside slit window";
+    right.className = visibility.clear ? "diag-ok" : "diag-warn";
+    right.textContent = visibility.reason;
 
     row.append(left, right);
     host.appendChild(row);
