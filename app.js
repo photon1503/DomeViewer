@@ -58,6 +58,7 @@ function createScope(idx) {
     gemAxisLength: 435,
     lateralAxisLength: 230,
     telescopeDiameterMm: 120,
+    tubeLengthMm: 760,
     azimuth: 30,
     elevation: 42
   };
@@ -303,12 +304,20 @@ function buildMountScopeScene3D() {
     const el = degToRad(scope.elevation);
     const horiz = v3(Math.sin(az), Math.cos(az), 0);
     const optical = v3Norm(v3Add(v3Scale(horiz, Math.cos(el)), v3(0, 0, Math.sin(el))));
+    const scopeFill = hexToRgba(color, 0.35);
 
-    const lines = [];
+    const rods = [];
     const circles = [];
     const labels = [];
 
-    lines.push({ a: v3(mount.x, mount.y, 0), b: mount, widthMm: 35, stroke: "rgba(220,230,255,0.55)" });
+    rods.push({
+      a: v3(mount.x, mount.y, 0),
+      b: mount,
+      diameterMm: 190,
+      fill: "rgba(126,145,176,0.55)",
+      stroke: "rgba(230,240,255,0.7)",
+      swMm: 10
+    });
 
     if (scope.mountType === "EQ") {
       const latAbs = degToRad(clamp(Math.abs(state.latitudeDeg), 0, 89.5));
@@ -324,23 +333,29 @@ function buildMountScopeScene3D() {
       const decB = v3Add(raHead, v3Scale(decUnit, -decHalf));
 
       const saddle = v3Dot(optical, decUnit) >= 0 ? decA : decB;
-      const tubeLen = 700;
-      const tubeEnd = v3Add(saddle, v3Scale(optical, tubeLen));
+      const tubeLen = Math.max(120, Number(scope.tubeLengthMm) || 760);
+      const tubeFront = v3Add(saddle, v3Scale(optical, tubeLen));
 
       const cwStart = v3Add(mount, v3Scale(raUnit, -Math.max(35, scope.gemAxisLength * 0.08)));
       const cwEnd = v3Add(cwStart, v3Scale(raUnit, -Math.max(220, scope.gemAxisLength * 1.05)));
       const cwMid = v3Add(cwStart, v3Scale(raUnit, -Math.max(220, scope.gemAxisLength * 1.05) * 0.7));
 
-      lines.push({ a: mount, b: raHead, widthMm: 60, stroke: color });
-      lines.push({ a: raHead, b: decA, widthMm: 40, stroke: "rgba(234,244,255,0.9)" });
-      lines.push({ a: raHead, b: decB, widthMm: 40, stroke: "rgba(234,244,255,0.9)" });
-      lines.push({ a: saddle, b: tubeEnd, widthMm: Math.max(35, scope.telescopeDiameterMm), stroke: color });
-      lines.push({ a: mount, b: cwStart, widthMm: 30, stroke: "rgba(220,233,255,0.9)" });
-      lines.push({ a: cwStart, b: cwEnd, widthMm: 30, stroke: "rgba(235,243,255,0.95)" });
+      rods.push({ a: mount, b: raHead, diameterMm: 140, fill: "rgba(147,168,201,0.5)", stroke: color, swMm: 9 });
+      rods.push({ a: decA, b: decB, diameterMm: 95, fill: "rgba(190,209,232,0.5)", stroke: "rgba(235,245,255,0.95)", swMm: 8 });
+      rods.push({
+        a: saddle,
+        b: tubeFront,
+        diameterMm: Math.max(48, scope.telescopeDiameterMm),
+        fill: scopeFill,
+        stroke: color,
+        swMm: 8
+      });
+      rods.push({ a: mount, b: cwStart, diameterMm: 62, fill: "rgba(206,219,239,0.55)", stroke: "rgba(236,245,255,0.95)", swMm: 7 });
+      rods.push({ a: cwStart, b: cwEnd, diameterMm: 38, fill: "rgba(225,236,249,0.62)", stroke: "rgba(244,250,255,0.98)", swMm: 6 });
 
       circles.push({ c: mount, rMm: 70, stroke: "rgba(230,240,255,0.85)", fill: "rgba(114,137,175,0.32)", swMm: 14 });
       circles.push({ c: raHead, rMm: 40, stroke: "rgba(227,240,255,0.9)", fill: "rgba(173,199,236,0.45)", swMm: 8 });
-      circles.push({ c: tubeEnd, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.2)", swMm: 8 });
+      circles.push({ c: tubeFront, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.26)", swMm: 8 });
       circles.push({ c: cwEnd, rMm: 55, stroke: "rgba(240,248,255,0.95)", fill: "rgba(217,229,248,0.72)", swMm: 8 });
       circles.push({ c: cwMid, rMm: 42, stroke: "rgba(240,248,255,0.95)", fill: "rgba(217,229,248,0.72)", swMm: 8 });
 
@@ -353,19 +368,29 @@ function buildMountScopeScene3D() {
       if (Math.hypot(altAxis.x, altAxis.y, altAxis.z) < 1e-6) altAxis = v3(1, 0, 0);
       const barA = v3Add(azHead, v3Scale(altAxis, 85));
       const barB = v3Add(azHead, v3Scale(altAxis, -85));
-      const tubeEnd = v3Add(azHead, v3Scale(optical, 740));
+      const tubeLen = Math.max(120, Number(scope.tubeLengthMm) || 760);
+      const tubeFront = v3Add(azHead, v3Scale(optical, tubeLen));
 
-      lines.push({ a: mount, b: azHead, widthMm: 60, stroke: color });
-      lines.push({ a: barA, b: barB, widthMm: 35, stroke: "rgba(230,240,255,0.9)" });
-      lines.push({ a: azHead, b: tubeEnd, widthMm: Math.max(35, scope.telescopeDiameterMm), stroke: color });
+      rods.push({ a: mount, b: azHead, diameterMm: 135, fill: "rgba(147,168,201,0.5)", stroke: color, swMm: 9 });
+      rods.push({ a: azHead, b: barA, diameterMm: 80, fill: "rgba(190,209,232,0.5)", stroke: "rgba(235,245,255,0.95)", swMm: 7 });
+      rods.push({ a: azHead, b: barB, diameterMm: 80, fill: "rgba(190,209,232,0.5)", stroke: "rgba(235,245,255,0.95)", swMm: 7 });
+      rods.push({ a: barA, b: barB, diameterMm: 70, fill: "rgba(206,219,239,0.48)", stroke: "rgba(234,245,255,0.9)", swMm: 6 });
+      rods.push({
+        a: azHead,
+        b: tubeFront,
+        diameterMm: Math.max(48, scope.telescopeDiameterMm),
+        fill: scopeFill,
+        stroke: color,
+        swMm: 8
+      });
 
       circles.push({ c: mount, rMm: 70, stroke: "rgba(230,240,255,0.85)", fill: "rgba(114,137,175,0.32)", swMm: 14 });
-      circles.push({ c: tubeEnd, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.2)", swMm: 8 });
+      circles.push({ c: tubeFront, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.28)", swMm: 8 });
     }
 
     labels.push({ p: mount, text: scope.name, color });
 
-    scene.push({ color, lines, circles, labels });
+    scene.push({ color, rods, circles, labels });
   });
 
   return scene;
@@ -389,6 +414,85 @@ function radiusPxFromMm(mm, scale, minPx = 2) {
   return Math.max(minPx, mm * scale * 0.16);
 }
 
+function hexToRgba(hex, alpha = 1) {
+  const clean = hex.replace("#", "");
+  if (clean.length !== 6) return `rgba(192,210,236,${alpha})`;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return `rgba(192,210,236,${alpha})`;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function drawProjectedRod(svg, a, b, diameterPx, fill, stroke, edgeWidthPx) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  const radius = Math.max(1.8, diameterPx * 0.5);
+
+  if (len < 0.001) {
+    svg.append(
+      svgEl("circle", {
+        cx: a.x,
+        cy: a.y,
+        r: radius,
+        fill,
+        stroke,
+        "stroke-width": Math.max(0.8, edgeWidthPx)
+      })
+    );
+    return;
+  }
+
+  const nx = -dy / len;
+  const ny = dx / len;
+  const p1 = `${a.x + nx * radius},${a.y + ny * radius}`;
+  const p2 = `${b.x + nx * radius},${b.y + ny * radius}`;
+  const p3 = `${b.x - nx * radius},${b.y - ny * radius}`;
+  const p4 = `${a.x - nx * radius},${a.y - ny * radius}`;
+
+  svg.append(
+    svgEl("polygon", {
+      points: `${p1} ${p2} ${p3} ${p4}`,
+      fill,
+      stroke,
+      "stroke-width": Math.max(0.8, edgeWidthPx),
+      "stroke-linejoin": "round"
+    })
+  );
+
+  svg.append(
+    svgEl("line", {
+      x1: a.x + nx * radius * 0.35,
+      y1: a.y + ny * radius * 0.35,
+      x2: b.x + nx * radius * 0.35,
+      y2: b.y + ny * radius * 0.35,
+      stroke: "rgba(245,250,255,0.35)",
+      "stroke-width": Math.max(0.7, edgeWidthPx * 0.45),
+      "stroke-linecap": "round"
+    })
+  );
+
+  svg.append(
+    svgEl("circle", {
+      cx: a.x,
+      cy: a.y,
+      r: radius,
+      fill,
+      stroke,
+      "stroke-width": Math.max(0.8, edgeWidthPx)
+    }),
+    svgEl("circle", {
+      cx: b.x,
+      cy: b.y,
+      r: radius,
+      fill,
+      stroke,
+      "stroke-width": Math.max(0.8, edgeWidthPx)
+    })
+  );
+}
+
 function svgEl(tag, attrs = {}) {
   const el = document.createElementNS(NS, tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -399,19 +503,17 @@ function svgEl(tag, attrs = {}) {
 
 function renderSceneTop(svg, scene, cx, cy, scale) {
   scene.forEach((obj) => {
-    obj.lines.forEach((line) => {
-      const a = projectTopPt(line.a, cx, cy, scale);
-      const b = projectTopPt(line.b, cx, cy, scale);
-      svg.append(
-        svgEl("line", {
-          x1: a.x,
-          y1: a.y,
-          x2: b.x,
-          y2: b.y,
-          stroke: line.stroke,
-          "stroke-width": strokePxFromMm(line.widthMm, scale, 1.2),
-          "stroke-linecap": "round"
-        })
+    obj.rods.forEach((rod) => {
+      const a = projectTopPt(rod.a, cx, cy, scale);
+      const b = projectTopPt(rod.b, cx, cy, scale);
+      drawProjectedRod(
+        svg,
+        a,
+        b,
+        strokePxFromMm(rod.diameterMm, scale, 4),
+        rod.fill,
+        rod.stroke,
+        strokePxFromMm(rod.swMm ?? 8, scale, 1)
       );
     });
 
@@ -439,19 +541,17 @@ function renderSceneTop(svg, scene, cx, cy, scale) {
 
 function renderSceneSide(svg, scene, sideRot, xToPx, zToPx, scale) {
   scene.forEach((obj) => {
-    obj.lines.forEach((line) => {
-      const a = projectSidePt(line.a, sideRot, xToPx, zToPx);
-      const b = projectSidePt(line.b, sideRot, xToPx, zToPx);
-      svg.append(
-        svgEl("line", {
-          x1: a.x,
-          y1: a.y,
-          x2: b.x,
-          y2: b.y,
-          stroke: line.stroke,
-          "stroke-width": strokePxFromMm(line.widthMm, scale, 1.1),
-          "stroke-linecap": "round"
-        })
+    obj.rods.forEach((rod) => {
+      const a = projectSidePt(rod.a, sideRot, xToPx, zToPx);
+      const b = projectSidePt(rod.b, sideRot, xToPx, zToPx);
+      drawProjectedRod(
+        svg,
+        a,
+        b,
+        strokePxFromMm(rod.diameterMm, scale, 4),
+        rod.fill,
+        rod.stroke,
+        strokePxFromMm(rod.swMm ?? 8, scale, 1)
       );
     });
 
@@ -691,7 +791,7 @@ function drawDiagnostics() {
 
     const left = document.createElement("span");
     left.style.color = palette[idx % palette.length];
-    left.textContent = `${scope.name}: Az ${heading.toFixed(0)} deg, El ${scope.elevation.toFixed(0)} deg, D ${scope.telescopeDiameterMm.toFixed(0)} mm`;
+    left.textContent = `${scope.name}: Az ${heading.toFixed(0)} deg, El ${scope.elevation.toFixed(0)} deg, D ${scope.telescopeDiameterMm.toFixed(0)} mm, L ${scope.tubeLengthMm.toFixed(0)} mm`;
 
     const right = document.createElement("span");
     right.className = slitOk ? "diag-ok" : "diag-warn";
@@ -791,6 +891,7 @@ function renderScopeCards() {
         ${makeNumberField(scope, "gemAxisLength", "GEM Axis Length (mm)", 0, 5000, 10)}
         ${makeNumberField(scope, "lateralAxisLength", "Lateral Axis Length (mm)", 0, 5000, 10)}
         ${makeNumberField(scope, "telescopeDiameterMm", "Telescope Diameter (mm)", 20, 1200, 5)}
+        ${makeNumberField(scope, "tubeLengthMm", "Tube Length (mm)", 120, 4000, 10)}
         ${makeNumberField(scope, "azimuth", "Move Scope Azimuth (deg)", 0, 359, 1)}
         ${makeNumberField(scope, "elevation", "Move Scope Elevation (deg)", 0, 89, 1)}
       </div>
@@ -849,6 +950,7 @@ function renderScopeCards() {
         if (field === "azimuth") target.azimuth = normalizeHeading(target.azimuth);
         if (field === "elevation") target.elevation = clamp(target.elevation, 0, 89);
         if (field === "telescopeDiameterMm") target.telescopeDiameterMm = Math.max(20, target.telescopeDiameterMm);
+        if (field === "tubeLengthMm") target.tubeLengthMm = Math.max(120, target.tubeLengthMm);
 
         renderAll();
       });
