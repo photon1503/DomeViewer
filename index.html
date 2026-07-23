@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dome Viewer Config</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <div>
+        <h1>Dome Viewer</h1>
+        <p>Classic dome + slit geometry playground for NINA-style configuration.</p>
+      </div>
+      <div class="chip-row">
+        <span class="chip">Static Website</span>
+        <span class="chip">Realtime 2D</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="controls-panel">
+        <h2>Geometry Inputs</h2>
+        <div class="control-grid" id="global-controls"></div>
+
+        <div class="scope-header">
+          <h3>Telescopes</h3>
+          <button id="add-scope" type="button">+ Add Telescope</button>
+        </div>
+        <div id="telescopes-container" class="telescopes-container"></div>
+      </section>
+
+      <section class="viewer-panel">
+        <div class="views-row">
+          <div class="view-card">
+            <div class="view-title-row">
+              <h3>Top View (Dome Plan)</h3>
+              <span class="legend">N up, E right</span>
+            </div>
+            <svg id="top-view" viewBox="0 0 420 420" role="img" aria-label="Top view of dome and telescopes"></svg>
+          </div>
+
+          <div class="view-card">
+            <div class="view-title-row">
+              <h3>Side View (Dome Elevation)</h3>
+              <span class="legend">Cross section through center</span>
+            </div>
+            <svg id="side-view" viewBox="0 0 640 420" role="img" aria-label="Side view of dome and telescopes"></svg>
+          </div>
+        </div>
+
+        <section class="diagnostics" id="diagnostics"></section>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,337 @@
+:root {
+  --bg: #0f1624;
+  --bg-soft: #1b2436;
+  --card: rgba(18, 26, 42, 0.86);
+  --line: rgba(166, 188, 218, 0.22);
+  --line-strong: rgba(208, 223, 244, 0.5);
+  --text: #e7eef9;
+  --muted: #9fb2cc;
+  --accent: #40d681;
+  --warn: #ffb454;
+  --danger: #ff6b6b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  font-family: "Rajdhani", "Trebuchet MS", sans-serif;
+  background:
+    radial-gradient(circle at 10% 20%, rgba(64, 214, 129, 0.1), transparent 40%),
+    radial-gradient(circle at 85% 10%, rgba(80, 123, 255, 0.16), transparent 35%),
+    linear-gradient(145deg, #0c1320, #151f2f 48%, #101a2a);
+}
+
+.app-shell {
+  width: min(1320px, 100% - 2rem);
+  margin: 1rem auto 2rem;
+}
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(1.8rem, 3vw, 2.5rem);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.app-header p {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 1rem;
+}
+
+.chip-row {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.chip {
+  font-family: "Space Mono", monospace;
+  font-size: 0.78rem;
+  border: 1px solid var(--line-strong);
+  color: #c9d8ec;
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 440px) 1fr;
+  gap: 1rem;
+}
+
+.controls-panel,
+.view-card,
+.diagnostics {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  backdrop-filter: blur(4px);
+}
+
+.controls-panel {
+  padding: 1rem;
+  max-height: calc(100vh - 6rem);
+  overflow-y: auto;
+}
+
+.controls-panel h2,
+.controls-panel h3,
+.viewer-panel h3 {
+  margin: 0 0 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.control-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.field label {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.field input,
+.field select,
+button {
+  border: 1px solid var(--line-strong);
+  background: rgba(14, 23, 38, 0.8);
+  color: var(--text);
+  border-radius: 8px;
+  font-family: "Space Mono", monospace;
+  font-size: 0.88rem;
+  padding: 0.38rem 0.5rem;
+}
+
+.field input[type="range"] {
+  padding: 0;
+}
+
+.field input[type="checkbox"] {
+  width: 1.1rem;
+  height: 1.1rem;
+  padding: 0;
+  accent-color: #40d681;
+  background: transparent;
+}
+
+.scope-header {
+  margin-top: 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#add-scope {
+  cursor: pointer;
+}
+
+.telescopes-container {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 0.7rem;
+}
+
+.scope-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem;
+  background: rgba(11, 18, 29, 0.82);
+  animation: rise 220ms ease-out;
+}
+
+.scope-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.scope-card-header h4 {
+  margin: 0;
+}
+
+.scope-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.move-panel {
+  margin-top: 0.7rem;
+  display: grid;
+  grid-template-columns: 172px 1fr;
+  gap: 0.8rem;
+}
+
+.move-pad-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.move-caption {
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.move-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-areas:
+    ". n u"
+    "w c e"
+    ". s d";
+  gap: 0.28rem;
+}
+
+.move-btn:nth-child(1) { grid-area: n; }
+.move-btn:nth-child(2) { grid-area: u; }
+.move-btn:nth-child(3) { grid-area: w; }
+.move-btn:nth-child(4) { grid-area: c; }
+.move-btn:nth-child(5) { grid-area: e; }
+.move-btn:nth-child(6) { grid-area: s; }
+.move-btn:nth-child(7) { grid-area: d; }
+
+.move-btn {
+  padding: 0.35rem 0;
+  border-radius: 9px;
+  border: 1px solid rgba(192, 214, 241, 0.35);
+  background: linear-gradient(180deg, rgba(31, 46, 70, 0.95), rgba(16, 26, 43, 0.95));
+}
+
+.move-center {
+  color: #8eeeb9;
+  border-color: rgba(90, 240, 170, 0.55);
+}
+
+.move-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.move-sliders label {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.move-sliders input[type="range"] {
+  width: 100%;
+}
+
+.move-btn,
+.remove-scope {
+  cursor: pointer;
+}
+
+.remove-scope {
+  border-color: rgba(255, 107, 107, 0.5);
+  color: #ffd3d3;
+}
+
+.viewer-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.views-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(360px, 1fr));
+  gap: 1rem;
+  overflow-x: auto;
+}
+
+.view-card {
+  padding: 0.75rem;
+}
+
+.view-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.4rem;
+}
+
+.legend {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+svg {
+  width: 100%;
+  border-radius: 10px;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    radial-gradient(circle at 25% 20%, rgba(103, 131, 180, 0.14), rgba(21, 32, 50, 0.9));
+  background-size: 22px 22px, 22px 22px, cover;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.diagnostics {
+  padding: 0.9rem;
+  font-family: "Space Mono", monospace;
+  font-size: 0.88rem;
+}
+
+.diag-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.diag-ok {
+  color: var(--accent);
+}
+
+.diag-warn {
+  color: var(--warn);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 1120px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .controls-panel {
+    max-height: none;
+  }
+}
