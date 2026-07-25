@@ -24,11 +24,14 @@
 
     <main class="layout">
       <section class="controls-panel">
-        <h2>Geometry Inputs</h2>
+        <h2>Dome Settings</h2>
         <div class="control-grid" id="global-controls"></div>
 
+        <h2>Mount</h2>
+        <div class="control-grid" id="mount-controls"></div>
+
         <div class="scope-header">
-          <h3>Telescopes</h3>
+          <h3>OTAs</h3>
           <button id="add-scope" type="button">+ Add OTA</button>
         </div>
         <div id="telescopes-container" class="telescopes-container"></div>
@@ -42,6 +45,14 @@
               <span class="legend">N up, E right</span>
             </div>
             <svg id="top-view" viewBox="0 0 420 420" role="img" aria-label="Top view of dome and telescopes"></svg>
+          </div>
+
+          <div class="view-card">
+            <div class="view-title-row">
+              <h3>Mount Geometry</h3>
+              <span class="legend">NINA reference</span>
+            </div>
+            <svg id="mount-view" viewBox="0 0 640 420" role="img" aria-label="Mount and OTA geometry reference view"></svg>
           </div>
 
           <div class="view-card">

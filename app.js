@@ -4,8 +4,8 @@ const MAX_SLIT_OPENING_DEG = 85;
 const palette = ["#7ad7ff", "#ff9f6e", "#bba4ff", "#71f3a9", "#ffd56f", "#ff7bb5"];
 
 const state = {
-  domeRadiusMm: 2500,
-  slitWidthMm: 1500,
+  domeRadiusMm: 1500,
+  slitWidthMm: 1100,
   maxSlitOpeningDeg: 85,
   slitWallHeightMm: 1500,
   azToleranceDeg: 2,
@@ -66,7 +66,7 @@ function createScope(idx) {
     otaSideOffsetMm: idx === 1 ? 0 : 320,
     otaPiggybackOffsetMm: idx === 1 ? 0 : 180,
     mountType: "EQ",
-    posNS: -80,
+    posNS: 80,
     posEW: 0,
     posUD: 272,
     gemAxisLength: 435,
@@ -143,6 +143,12 @@ function getOtaOffset(scope, optical, sideDir) {
   if (Math.hypot(piggybackDir.x, piggybackDir.y, piggybackDir.z) < 1e-6) piggybackDir = v3(0, 0, 1);
   if (v3Dot(piggybackDir, v3(0, 0, 1)) < 0) piggybackDir = v3Scale(piggybackDir, -1);
   return v3Add(v3Scale(sideDir, sideOffset), v3Scale(piggybackDir, piggybackHeight));
+}
+
+function getMountAxisPoint(scope = getMountScope()) {
+  const mountScope = scope ?? getMountScope();
+  if (!mountScope) return v3(0, 0, state.domeRadiusMm);
+  return v3(mountScope.posEW, mountScope.posNS, state.domeRadiusMm + mountScope.posUD);
 }
 
 function getEqPierSide(scope) {
@@ -325,7 +331,7 @@ function solveQuadraticPositive(A, B, C) {
 
 function getScopeOpticalRay(scope) {
   const mountScope = getMountScope() ?? scope;
-  const mount = v3(mountScope.posEW, mountScope.posNS, mountScope.posUD);
+  const mount = getMountAxisPoint(mountScope);
   const pointing = getScopePointing(scope);
   const optical = pointing.optical;
 
@@ -647,7 +653,7 @@ function buildTopSlitFootprint(radiusMm, slitAzDeg, slitWidthMm, wallHeightMm, s
 function getEqMountGeometry(scope) {
   const up = v3(0, 0, 1);
   const mountScope = getMountScope() ?? scope;
-  const mount = v3(mountScope.posEW, mountScope.posNS, mountScope.posUD);
+  const mount = getMountAxisPoint(mountScope);
   const pointing = getScopePointing(scope);
   const optical = pointing.optical;
   const latAbs = degToRad(clamp(Math.abs(state.latitudeDeg), 0, 89.5));
@@ -702,7 +708,7 @@ function getEqMountGeometry(scope) {
 function getAzOtaGeometry(scope) {
   const up = v3(0, 0, 1);
   const mountScope = getMountScope() ?? scope;
-  const mount = v3(mountScope.posEW, mountScope.posNS, mountScope.posUD);
+  const mount = getMountAxisPoint(mountScope);
   const pointing = getScopePointing(scope);
   const optical = pointing.optical;
   const az = degToRad(pointing.azimuthDeg);
@@ -734,7 +740,7 @@ function buildMountScopeScene3D() {
     const color = palette[idx % palette.length];
     const isMountOwner = scope === mountScope;
     const mountConfig = mountScope ?? scope;
-    const mount = v3(mountConfig.posEW, mountConfig.posNS, mountConfig.posUD);
+    const mount = getMountAxisPoint(mountConfig);
     const pointing = getScopePointing(scope);
     const optical = pointing.optical;
     const az = degToRad(pointing.azimuthDeg);
@@ -1103,6 +1109,61 @@ function renderLaserSide(svg, sideRot, xToPx, zToPx) {
   });
 }
 
+function drawMountView() {
+  const svg = document.getElementById("mount-view");
+  if (!svg) return;
+  svg.innerHTML = "";
+
+  const W = 640;
+  const H = 420;
+  const padX = 58;
+  const padTop = 24;
+  const padBottom = 36;
+  const R = state.domeRadiusMm;
+  const scale = Math.min((W - padX * 2) / (2 * R + 400), (H - padTop - padBottom) / (2 * R + 500));
+  const xToPx = (x) => padX + (x + R) * scale;
+  const zToPx = (z) => H - padBottom - z * scale;
+  const mountScope = getMountScope();
+  if (!mountScope) return;
+
+  const domeCenter = v3(0, 0, R);
+  const mountAxis = getMountAxisPoint(mountScope);
+  const floorY = zToPx(0);
+  const centerY = zToPx(R);
+  const capPath = [];
+
+  for (let i = 0; i <= 80; i += 1) {
+    const x = -R + (2 * R * i) / 80;
+    const z = R + Math.sqrt(Math.max(0, R * R - x * x));
+    capPath.push(`${i === 0 ? "M" : "L"} ${xToPx(x)} ${zToPx(z)}`);
+  }
+
+  svg.append(
+    svgEl("line", { x1: xToPx(-R) - 22, y1: floorY, x2: xToPx(R) + 22, y2: floorY, stroke: "rgba(238,248,255,0.6)", "stroke-width": 1 }),
+    svgEl("rect", { x: xToPx(-R), y: centerY, width: xToPx(R) - xToPx(-R), height: floorY - centerY, fill: "rgba(219,232,248,0.1)", stroke: "rgba(237,246,255,0.42)", "stroke-width": 2 }),
+    svgEl("path", { d: capPath.join(" "), fill: "none", stroke: "rgba(237,246,255,0.74)", "stroke-width": 2 }),
+    svgEl("line", { x1: xToPx(-R) - 12, y1: centerY, x2: xToPx(R) + 12, y2: centerY, stroke: "rgba(255,212,111,0.62)", "stroke-width": 1, "stroke-dasharray": "6 5" }),
+    svgEl("line", { x1: xToPx(0), y1: floorY, x2: xToPx(0), y2: zToPx(2 * R) - 8, stroke: "rgba(255,212,111,0.5)", "stroke-width": 1, "stroke-dasharray": "6 5" })
+  );
+
+  const centerPt = projectSidePt(domeCenter, 0, xToPx, zToPx);
+  const mountPt = projectSidePt(mountAxis, 0, xToPx, zToPx);
+  svg.append(
+    svgEl("line", { x1: centerPt.x, y1: centerPt.y, x2: mountPt.x, y2: mountPt.y, stroke: "rgba(122,215,255,0.72)", "stroke-width": 1.5, "stroke-dasharray": "5 4" }),
+    svgEl("circle", { cx: centerPt.x, cy: centerPt.y, r: 5, fill: "rgba(255,213,111,0.9)", stroke: "rgba(255,246,210,0.9)", "stroke-width": 1.5 }),
+    svgEl("circle", { cx: mountPt.x, cy: mountPt.y, r: 5.5, fill: "rgba(122,215,255,0.9)", stroke: "rgba(220,246,255,0.95)", "stroke-width": 1.5 })
+  );
+
+  renderSceneSide(svg, buildMountScopeScene3D(), 0, xToPx, zToPx, scale);
+  renderLaserSide(svg, 0, xToPx, zToPx);
+
+  const centerText = svgEl("text", { x: centerPt.x + 8, y: centerPt.y - 8, fill: "#ffd56f", "font-size": 11 });
+  centerText.textContent = "Dome center";
+  const mountText = svgEl("text", { x: mountPt.x + 8, y: mountPt.y + 14, fill: "#7ad7ff", "font-size": 11 });
+  mountText.textContent = `Mount axis: N ${mountScope.posNS.toFixed(0)} / E ${mountScope.posEW.toFixed(0)} / U ${mountScope.posUD.toFixed(0)} mm`;
+  svg.append(centerText, mountText);
+}
+
 function drawTopView() {
   const svg = document.getElementById("top-view");
   svg.innerHTML = "";
@@ -1359,6 +1420,7 @@ function renderAll() {
   }
 
   drawTopView();
+  drawMountView();
   drawSideView();
   drawDiagnostics();
   ensureDomeAnimation();
@@ -1396,6 +1458,85 @@ function makeSelectField(scope, key, label, opts) {
   `;
 }
 
+function makeMountNumberField(key, label, min, max, step) {
+  const mountScope = getMountScope();
+  return `
+    <div class="field">
+      <label for="mount-${key}">${label}</label>
+      <input id="mount-${key}" data-mount-field="${key}" type="number"
+        min="${min}" max="${max}" step="${step}" value="${mountScope?.[key] ?? 0}">
+    </div>
+  `;
+}
+
+function makeMountSelectField(key, label, opts) {
+  const mountScope = getMountScope();
+  const value = mountScope?.[key];
+  const options = opts
+    .map((opt) => `<option value="${opt}" ${opt === value ? "selected" : ""}>${opt}</option>`)
+    .join("");
+
+  return `
+    <div class="field">
+      <label for="mount-${key}">${label}</label>
+      <select id="mount-${key}" data-mount-field="${key}">${options}</select>
+    </div>
+  `;
+}
+
+function renderMountControls() {
+  const host = document.getElementById("mount-controls");
+  const mountScope = getMountScope();
+  if (!host || !mountScope) return;
+
+  const isEq = mountScope.mountType === "EQ";
+  host.innerHTML = `
+    ${makeMountSelectField("mountType", "Mount Type", ["EQ", "AZ"])}
+    ${makeMountNumberField("posNS", "Position N/S (mm)", -5000, 5000, 10)}
+    ${makeMountNumberField("posEW", "Position E/W (mm)", -5000, 5000, 10)}
+    ${makeMountNumberField("posUD", "Position Up/Down (mm)", -5000, 5000, 10)}
+    ${makeMountNumberField("gemAxisLength", "GEM Axis Length (mm)", 0, 5000, 10)}
+    ${makeMountNumberField("lateralAxisLength", "DEC/CW Axis Length (mm)", 0, 5000, 10)}
+    ${isEq ? makeMountSelectField("pierSideMode", "Meridian Flip", ["AUTO", "MANUAL"]) : ""}
+    ${isEq ? makeMountSelectField("pierSide", "Pier Side", ["WEST", "EAST"]) : ""}
+    ${isEq
+      ? makeMountNumberField("hourAngleDeg", "RA Axis / Hour Angle (deg)", -180, 180, 1)
+      : makeMountNumberField("azimuth", "Azimuth (deg)", 0, 359, 1)}
+    ${isEq
+      ? makeMountNumberField("declinationDeg", "DEC Axis / Declination (deg)", -90, 90, 1)
+      : makeMountNumberField("elevation", "Elevation (deg)", 0, 89, 1)}
+  `;
+
+  for (const input of host.querySelectorAll("[data-mount-field]")) {
+    input.addEventListener("input", (e) => {
+      const field = e.target.getAttribute("data-mount-field");
+      if (!field) return;
+
+      if (field === "mountType" || field === "pierSideMode" || field === "pierSide") {
+        mountScope[field] = e.target.value;
+      } else {
+        const parsed = Number(e.target.value);
+        if (!Number.isFinite(parsed)) return;
+        mountScope[field] = parsed;
+      }
+
+      if ((field === "mountType" || field === "pierSideMode") && runtime.trackingScopeId === mountScope.id) {
+        stopTrackingTelescope();
+      }
+      if (field === "azimuth") mountScope.azimuth = normalizeHeading(mountScope.azimuth);
+      if (field === "elevation") mountScope.elevation = clamp(mountScope.elevation, 0, 89);
+      if (field === "hourAngleDeg") mountScope.hourAngleDeg = normalizeSignedDeg(mountScope.hourAngleDeg);
+      if (field === "declinationDeg") mountScope.declinationDeg = clamp(mountScope.declinationDeg, -90, 90);
+
+      if (field === "mountType" || field === "pierSideMode") {
+        renderMountControls();
+        renderScopeCards();
+      }
+      renderAll();
+    });
+  }
+}
+
 function renderScopeCards() {
   const wrap = document.getElementById("telescopes-container");
   wrap.innerHTML = "";
@@ -1410,27 +1551,11 @@ function renderScopeCards() {
     const card = document.createElement("article");
     card.className = "scope-card";
     const isEq = mountConfig.mountType === "EQ";
-    const trackLabel = isTrackingScope(mountConfig.id) ? "Stop Tracking" : "Track Mount";
     const removeButton = isMountOwner
-      ? `<button class="remove-scope" data-id="${scope.id}" type="button" disabled>Mount Owner</button>`
+      ? `<span class="chip">Primary OTA</span>`
       : `<button class="remove-scope" data-id="${scope.id}" type="button">Remove</button>`;
     const mountControls = isMountOwner
-      ? `
-        ${makeSelectField(scope, "mountType", "Mount Type", ["EQ", "AZ"])}
-        ${makeNumberField(scope, "posNS", "Mount N/S (mm)", -5000, 5000, 10)}
-        ${makeNumberField(scope, "posEW", "Mount E/W (mm)", -5000, 5000, 10)}
-        ${makeNumberField(scope, "posUD", "Mount Up/Down (mm)", -5000, 5000, 10)}
-        ${makeNumberField(scope, "gemAxisLength", "Mount Axis Length (mm)", 0, 5000, 10)}
-        ${makeNumberField(scope, "lateralAxisLength", "DEC/CW Axis Length (mm)", 0, 5000, 10)}
-        ${isEq ? makeSelectField(scope, "pierSideMode", "Meridian Flip", ["AUTO", "MANUAL"]) : ""}
-        ${isEq ? makeSelectField(scope, "pierSide", "Pier Side", ["WEST", "EAST"]) : ""}
-        ${isEq
-          ? makeNumberField(scope, "hourAngleDeg", "RA Axis / Hour Angle (deg)", -180, 180, 1)
-          : makeNumberField(scope, "azimuth", "Move Scope Azimuth (deg)", 0, 359, 1)}
-        ${isEq
-          ? makeNumberField(scope, "declinationDeg", "DEC Axis / Declination (deg)", -90, 90, 1)
-          : makeNumberField(scope, "elevation", "Move Scope Elevation (deg)", 0, 89, 1)}
-      `
+      ? ""
       : `
         ${makeSelectField(scope, "otaLayout", "OTA Layout", ["SIDE_BY_SIDE", "PIGGYBACK"])}
         ${makeNumberField(scope, "otaSideOffsetMm", "Side Offset (mm)", -2000, 2000, 10)}
@@ -1457,44 +1582,25 @@ function renderScopeCards() {
         ${makeNumberField(scope, "tubeLengthMm", "Tube Length (mm)", 120, 4000, 10)}
       </div>
 
-      <div class="move-panel" style="${isMountOwner ? "" : "display: none;"}">
-        <div class="move-pad-wrap">
-          <span class="move-caption">Move Mount</span>
-          <div class="move-pad">
-            <button class="move-btn" data-id="${scope.id}" data-field="posNS" data-step="10" type="button">N</button>
-            <button class="move-btn" data-id="${scope.id}" data-field="posUD" data-step="10" type="button">U</button>
-            <button class="move-btn" data-id="${scope.id}" data-field="posEW" data-step="-10" type="button">W</button>
-            <button class="move-btn move-center" data-id="${scope.id}" data-center="true" type="button">0</button>
-            <button class="move-btn" data-id="${scope.id}" data-field="posEW" data-step="10" type="button">E</button>
-            <button class="move-btn" data-id="${scope.id}" data-field="posNS" data-step="-10" type="button">S</button>
-            <button class="move-btn" data-id="${scope.id}" data-field="posUD" data-step="-10" type="button">D</button>
-          </div>
-        </div>
-
-        <div class="move-sliders">
-          <label for="${scope.id}-az-slider">${isEq ? "RA Axis / Hour Angle" : "Azimuth"}</label>
-          <input id="${scope.id}-az-slider" data-scope-id="${scope.id}" data-scope-field="${isEq ? "hourAngleDeg" : "azimuth"}" type="range" min="${isEq ? -180 : 0}" max="${isEq ? 180 : 359}" step="1" value="${isEq ? scope.hourAngleDeg : scope.azimuth}">
-          <label for="${scope.id}-el-slider">${isEq ? "DEC Axis / Declination" : "Elevation"}</label>
-          <input id="${scope.id}-el-slider" data-scope-id="${scope.id}" data-scope-field="${isEq ? "declinationDeg" : "elevation"}" type="range" min="${isEq ? -90 : 0}" max="${isEq ? 90 : 89}" step="1" value="${isEq ? scope.declinationDeg : scope.elevation}">
-        </div>
-
-        ${isEq && isMountOwner ? `<div class="track-row"><button class="track-scope" data-id="${scope.id}" type="button">${trackLabel}</button></div>` : ""}
-      </div>
+      ${isMountOwner && isEq ? `<div class="track-row"><button class="track-scope" data-id="${scope.id}" type="button">${isTrackingScope(mountConfig.id) ? "Stop Tracking" : "Track Mount"}</button></div>` : ""}
     `;
 
     wrap.appendChild(card);
 
-    card.querySelector(".remove-scope").addEventListener("click", () => {
-      if (state.telescopes.length === 1) return;
-      if (runtime.trackingScopeId === scope.id) stopTrackingTelescope();
-      state.telescopes = state.telescopes.filter((t) => t.id !== scope.id);
-      if (!state.telescopes.find((t) => t.id === Number(state.followScopeId))) {
-        state.followScopeId = state.telescopes[0]?.id ?? 1;
-      }
-      renderGlobalControls();
-      renderScopeCards();
-      renderAll();
-    });
+    const removeBtn = card.querySelector(".remove-scope");
+    if (removeBtn) {
+      removeBtn.addEventListener("click", () => {
+        if (state.telescopes.length === 1) return;
+        if (runtime.trackingScopeId === scope.id) stopTrackingTelescope();
+        state.telescopes = state.telescopes.filter((t) => t.id !== scope.id);
+        if (!state.telescopes.find((t) => t.id === Number(state.followScopeId))) {
+          state.followScopeId = state.telescopes[0]?.id ?? 1;
+        }
+        renderGlobalControls();
+        renderScopeCards();
+        renderAll();
+      });
+    }
 
     for (const input of card.querySelectorAll("[data-scope-field]")) {
       input.addEventListener("input", (e) => {
@@ -1536,29 +1642,6 @@ function renderScopeCards() {
       });
     }
 
-    for (const btn of card.querySelectorAll(".move-btn")) {
-      btn.addEventListener("click", () => {
-        const id = Number(btn.getAttribute("data-id"));
-        const target = state.telescopes.find((t) => t.id === id);
-        if (!target) return;
-
-        if (btn.getAttribute("data-center") === "true") {
-          target.posNS = 0;
-          target.posEW = 0;
-          target.posUD = 0;
-        } else {
-          const field = btn.getAttribute("data-field");
-          const step = Number(btn.getAttribute("data-step"));
-          if (!field || !Number.isFinite(step)) return;
-          target[field] = Number(target[field]) + step;
-          if (field === "azimuth") target.azimuth = normalizeHeading(target.azimuth);
-          if (field === "elevation") target.elevation = clamp(target.elevation, 0, 89);
-        }
-
-        renderScopeCards();
-        renderAll();
-      });
-    }
   }
 }
 
@@ -1727,6 +1810,7 @@ function wireButtons() {
 function init() {
   runtime.currentDomeAzimuthDeg = getDomeTargetAzimuthDeg();
   renderGlobalControls();
+  renderMountControls();
   wireButtons();
   renderScopeCards();
   renderAll();
