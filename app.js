@@ -4,21 +4,22 @@ const MAX_SLIT_OPENING_DEG = 85;
 const palette = ["#7ad7ff", "#ff9f6e", "#bba4ff", "#71f3a9", "#ffd56f", "#ff7bb5"];
 
 const state = {
-  domeRadiusMm: 1500,
-  slitWidthMm: 1100,
+  domeRadiusMm: 2500,
+  slitWidthMm: 1500,
   maxSlitOpeningDeg: 85,
   slitWallHeightMm: 1500,
   azToleranceDeg: 2,
-  latitudeDeg: 52,
+  latitudeDeg: 48,
   domeAzimuthDeg: 0,
   domeFollowsTelescope: true,
   followScopeId: 1,
-  simulateDomeSlew: true,
+  simulateDomeSlew: false,
   domeSlewSpeedDegPerSec: 7,
   domeAccelDegPerSec2: 4,
   domeDecelDegPerSec2: 5,
   domeSettleTimeSec: 0.6,
   sideViewRotationDeg: 0,
+  showLaserLine: true,
   telescopes: [createScope(1)]
 };
 
@@ -27,7 +28,17 @@ const runtime = {
   domeAngularVelDegPerSec: 0,
   settleUntilMs: 0,
   rafId: null,
-  lastTsMs: 0
+  lastTsMs: 0,
+  trackingRafId: null,
+  trackingScopeId: null,
+  trackingStartTsMs: 0,
+  trackingDurationMs: 9000,
+  trackingStartHaDeg: 0,
+  trackingEndHaDeg: 0,
+  trackingPauseUntilMs: 0,
+  trackingLastPierSide: null,
+  trackingOriginalPierSideMode: null,
+  trackingOriginalPierSide: null
 };
 
 let nextScopeId = 2;
@@ -51,6 +62,9 @@ function createScope(idx) {
   return {
     id: idx,
     name: `Telescope ${idx}`,
+    otaLayout: idx === 1 ? "PRIMARY" : "SIDE_BY_SIDE",
+    otaSideOffsetMm: idx === 1 ? 0 : 320,
+    otaPiggybackOffsetMm: idx === 1 ? 0 : 180,
     mountType: "EQ",
     posNS: -80,
     posEW: 0,
@@ -59,6 +73,10 @@ function createScope(idx) {
     lateralAxisLength: 230,
     telescopeDiameterMm: 120,
     tubeLengthMm: 760,
+    hourAngleDeg: 0,
+    declinationDeg: 25,
+    pierSideMode: "AUTO",
+    pierSide: "WEST",
     azimuth: 30,
     elevation: 42
   };
@@ -75,6 +93,12 @@ function degToRad(deg) {
 function normalizeHeading(deg) {
   let angle = deg % 360;
   if (angle < 0) angle += 360;
+  return angle;
+}
+
+function normalizeSignedDeg(deg) {
+  let angle = normalizeHeading(deg);
+  if (angle > 180) angle -= 360;
   return angle;
 }
 
@@ -107,10 +131,180 @@ function getFollowScope() {
   return state.telescopes.find((scope) => scope.id === Number(state.followScopeId)) ?? null;
 }
 
+function getMountScope() {
+  return state.telescopes[0] ?? null;
+}
+
+function getOtaOffset(scope, optical, sideDir) {
+  const layout = scope.otaLayout ?? "PRIMARY";
+  const sideOffset = layout === "PRIMARY" ? 0 : Number(scope.otaSideOffsetMm) || 0;
+  const piggybackHeight = layout === "PIGGYBACK" ? Number(scope.otaPiggybackOffsetMm) || 0 : 0;
+  let piggybackDir = v3Norm(v3Cross(optical, sideDir));
+  if (Math.hypot(piggybackDir.x, piggybackDir.y, piggybackDir.z) < 1e-6) piggybackDir = v3(0, 0, 1);
+  if (v3Dot(piggybackDir, v3(0, 0, 1)) < 0) piggybackDir = v3Scale(piggybackDir, -1);
+  return v3Add(v3Scale(sideDir, sideOffset), v3Scale(piggybackDir, piggybackHeight));
+}
+
+function getEqPierSide(scope) {
+  const mountScope = getMountScope() ?? scope;
+  if (mountScope.mountType !== "EQ") return null;
+  if ((mountScope.pierSideMode ?? "AUTO") === "MANUAL") {
+    return mountScope.pierSide === "EAST" ? "EAST" : "WEST";
+  }
+  return normalizeSignedDeg(mountScope.hourAngleDeg ?? 0) < 0 ? "WEST" : "EAST";
+}
+
+function getScopePointing(scope) {
+  const mountScope = getMountScope() ?? scope;
+
+  if (mountScope.mountType !== "EQ") {
+    const azimuthDeg = normalizeHeading(mountScope.azimuth);
+    const elevationDeg = clamp(mountScope.elevation, 0, 89);
+    const az = degToRad(azimuthDeg);
+    const el = degToRad(elevationDeg);
+    const horiz = v3(Math.sin(az), Math.cos(az), 0);
+    const optical = v3Norm(v3Add(v3Scale(horiz, Math.cos(el)), v3(0, 0, Math.sin(el))));
+    return { optical, azimuthDeg, elevationDeg };
+  }
+
+  const lat = degToRad(clamp(state.latitudeDeg, -89.5, 89.5));
+  const hourAngle = degToRad(normalizeSignedDeg(mountScope.hourAngleDeg ?? 0));
+  const declination = degToRad(clamp(mountScope.declinationDeg ?? 0, -90, 90));
+
+  const sinAlt = Math.sin(lat) * Math.sin(declination) + Math.cos(lat) * Math.cos(declination) * Math.cos(hourAngle);
+  const elevationDeg = (Math.asin(clamp(sinAlt, -1, 1)) * 180) / Math.PI;
+
+  const east = -Math.cos(declination) * Math.sin(hourAngle);
+  const north = Math.sin(declination) * Math.cos(lat) - Math.cos(declination) * Math.sin(lat) * Math.cos(hourAngle);
+  const azimuthDeg = normalizeHeading((Math.atan2(east, north) * 180) / Math.PI);
+  const optical = v3Norm(v3(east, north, sinAlt));
+
+  return { optical, azimuthDeg, elevationDeg };
+}
+
+function getEqTrackingHourAngleLimitDeg(scope) {
+  const lat = degToRad(clamp(state.latitudeDeg, -89.5, 89.5));
+  const dec = degToRad(clamp(scope.declinationDeg ?? 0, -89.5, 89.5));
+  const cosH0 = -Math.tan(lat) * Math.tan(dec);
+
+  if (cosH0 >= 1) return 0;
+  if (cosH0 <= -1) return 180;
+  return (Math.acos(cosH0) * 180) / Math.PI;
+}
+
+function isTrackingScope(scopeId) {
+  return runtime.trackingScopeId === scopeId && runtime.trackingRafId !== null;
+}
+
+function stopTrackingTelescope(resetId = null) {
+  const trackedScope = runtime.trackingScopeId !== null
+    ? state.telescopes.find((item) => item.id === runtime.trackingScopeId)
+    : null;
+  if (runtime.trackingRafId !== null) {
+    cancelAnimationFrame(runtime.trackingRafId);
+  }
+  if (trackedScope) {
+    if (runtime.trackingOriginalPierSideMode) trackedScope.pierSideMode = runtime.trackingOriginalPierSideMode;
+    if (runtime.trackingOriginalPierSide) trackedScope.pierSide = runtime.trackingOriginalPierSide;
+  }
+  const shouldRenderCards = runtime.trackingScopeId !== null || resetId !== null;
+  runtime.trackingRafId = null;
+  runtime.trackingScopeId = null;
+  runtime.trackingStartTsMs = 0;
+  runtime.trackingStartHaDeg = 0;
+  runtime.trackingEndHaDeg = 0;
+  runtime.trackingPauseUntilMs = 0;
+  runtime.trackingLastPierSide = null;
+  runtime.trackingOriginalPierSideMode = null;
+  runtime.trackingOriginalPierSide = null;
+  if (shouldRenderCards) {
+    renderScopeCards();
+    renderAll();
+  }
+}
+
+function trackTelescopeFrame(tsMs) {
+  const scope = state.telescopes.find((item) => item.id === runtime.trackingScopeId);
+  if (!scope || scope.mountType !== "EQ") {
+    stopTrackingTelescope();
+    return;
+  }
+
+  if (!runtime.trackingStartTsMs) runtime.trackingStartTsMs = tsMs;
+  const elapsed = tsMs - runtime.trackingStartTsMs;
+  const progress = clamp(elapsed / runtime.trackingDurationMs, 0, 1);
+  const nextHourAngleDeg = normalizeSignedDeg(
+    runtime.trackingStartHaDeg + (runtime.trackingEndHaDeg - runtime.trackingStartHaDeg) * progress
+  );
+  const nextPierSide = nextHourAngleDeg < 0 ? "WEST" : "EAST";
+
+  if (runtime.trackingPauseUntilMs > tsMs) {
+    scope.hourAngleDeg = 0;
+  } else if (runtime.trackingPauseUntilMs > 0) {
+    runtime.trackingPauseUntilMs = 0;
+    runtime.trackingLastPierSide = nextPierSide;
+    scope.pierSide = nextPierSide;
+    scope.pierSideMode = "AUTO";
+    scope.hourAngleDeg = nextHourAngleDeg;
+  } else if (runtime.trackingLastPierSide !== null && nextPierSide !== runtime.trackingLastPierSide) {
+    runtime.trackingPauseUntilMs = tsMs + 500;
+    scope.hourAngleDeg = 0;
+    scope.pierSideMode = "MANUAL";
+    scope.pierSide = runtime.trackingLastPierSide;
+  } else {
+    scope.hourAngleDeg = nextHourAngleDeg;
+  }
+
+  renderScopeCards();
+  renderAll();
+
+  if (progress >= 1) {
+    stopTrackingTelescope(scope.id);
+    return;
+  }
+
+  runtime.trackingRafId = requestAnimationFrame(trackTelescopeFrame);
+}
+
+function startTrackingTelescope(scopeId) {
+  const scope = state.telescopes.find((item) => item.id === scopeId);
+  if (!scope || scope.mountType !== "EQ") return;
+
+  if (isTrackingScope(scopeId)) {
+    stopTrackingTelescope(scopeId);
+    return;
+  }
+
+  stopTrackingTelescope();
+
+  const hourLimitDeg = getEqTrackingHourAngleLimitDeg(scope);
+  if (hourLimitDeg <= 0.001) {
+    renderScopeCards();
+    renderAll();
+    return;
+  }
+
+  runtime.trackingScopeId = scopeId;
+  runtime.trackingStartTsMs = 0;
+  runtime.trackingStartHaDeg = -hourLimitDeg;
+  runtime.trackingEndHaDeg = hourLimitDeg;
+  runtime.trackingPauseUntilMs = 0;
+  runtime.trackingOriginalPierSideMode = scope.pierSideMode;
+  runtime.trackingOriginalPierSide = scope.pierSide;
+  runtime.trackingLastPierSide = "WEST";
+  scope.pierSideMode = "AUTO";
+  scope.hourAngleDeg = normalizeSignedDeg(runtime.trackingStartHaDeg);
+  runtime.trackingRafId = requestAnimationFrame(trackTelescopeFrame);
+}
+
 function getDomeTargetAzimuthDeg() {
   if (state.domeFollowsTelescope) {
     const target = getFollowScope();
-    if (target) return normalizeHeading(target.azimuth);
+    if (target) {
+      const hit = getScopeDomeHit(target);
+      if (hit) return getPointAzimuthDeg(hit);
+      return getScopePointing(target).azimuthDeg;
+    }
   }
   return normalizeHeading(state.domeAzimuthDeg);
 }
@@ -130,31 +324,19 @@ function solveQuadraticPositive(A, B, C) {
 }
 
 function getScopeOpticalRay(scope) {
-  const up = v3(0, 0, 1);
-  const mount = v3(scope.posEW, scope.posNS, scope.posUD);
-  const az = degToRad(scope.azimuth);
-  const el = degToRad(scope.elevation);
-  const horiz = v3(Math.sin(az), Math.cos(az), 0);
-  const optical = v3Norm(v3Add(v3Scale(horiz, Math.cos(el)), v3(0, 0, Math.sin(el))));
+  const mountScope = getMountScope() ?? scope;
+  const mount = v3(mountScope.posEW, mountScope.posNS, mountScope.posUD);
+  const pointing = getScopePointing(scope);
+  const optical = pointing.optical;
 
-  if (scope.mountType === "EQ") {
-    const latAbs = degToRad(clamp(Math.abs(state.latitudeDeg), 0, 89.5));
-    const hemiSign = state.latitudeDeg >= 0 ? 1 : -1;
-    const raUnit = v3Norm(v3(0, hemiSign * Math.cos(latAbs), Math.sin(latAbs)));
-    let decUnit = v3Norm(v3Cross(raUnit, up));
-    if (Math.hypot(decUnit.x, decUnit.y, decUnit.z) < 1e-6) decUnit = v3(1, 0, 0);
-
-    const raLen = Math.max(120, scope.gemAxisLength);
-    const raHead = v3Add(mount, v3Scale(raUnit, raLen));
-    const decHalf = Math.max(80, scope.lateralAxisLength * 0.5);
-    const decA = v3Add(raHead, v3Scale(decUnit, decHalf));
-    const decB = v3Add(raHead, v3Scale(decUnit, -decHalf));
-    const saddle = v3Dot(optical, decUnit) >= 0 ? decA : decB;
-    return { origin: saddle, dir: optical };
+  if (mountScope.mountType === "EQ") {
+    const geometry = getEqMountGeometry(scope);
+    return { origin: geometry.tubeFront, dir: geometry.optical };
   }
 
-  const azHead = v3(mount.x, mount.y, mount.z + Math.max(110, scope.gemAxisLength * 0.45));
-  return { origin: azHead, dir: optical };
+  const azGeometry = getAzOtaGeometry(scope);
+  const tubeFront = azGeometry ? azGeometry.tubeFront : v3Add(mount, v3Scale(optical, Math.max(120, Number(scope.tubeLengthMm) || 760) * 0.58));
+  return { origin: tubeFront, dir: optical };
 }
 
 function intersectRayWithDome(origin, dir, radiusMm) {
@@ -184,8 +366,19 @@ function intersectRayWithDome(origin, dir, radiusMm) {
   return v3(origin.x + dir.x * t, origin.y + dir.y * t, origin.z + dir.z * t);
 }
 
-function isPointInsideSlit(point, domeAzimuthDeg, slitWidthMm, radiusMm, toleranceDeg) {
+function getPointAzimuthDeg(point) {
+  return normalizeHeading((Math.atan2(point.x, point.y) * 180) / Math.PI);
+}
+
+function getScopeDomeHit(scope) {
+  const ray = getScopeOpticalRay(scope);
+  return intersectRayWithDome(ray.origin, ray.dir, state.domeRadiusMm);
+}
+
+function isPointInsideSlit(point, domeAzimuthDeg, slitWidthMm, radiusMm, toleranceDeg, shutterLimitDeg) {
   if (point.z < -1e-6 || point.z > 2 * radiusMm + 1e-6) return false;
+  const zMax = radiusMm + radiusMm * Math.sin(degToRad(clamp(shutterLimitDeg, 0, 90)));
+  if (point.z > zMax + 1e-6) return false;
 
   const r = point.z <= radiusMm ? radiusMm : domeRadiusAtHeight(point.z, radiusMm);
   if (r < 1) return false;
@@ -209,19 +402,18 @@ function isPointInsideSlit(point, domeAzimuthDeg, slitWidthMm, radiusMm, toleran
 
 function evaluateScopeSlitVisibility(scope) {
   const domeAz = getDomeAzimuthDeg();
-  const heading = normalizeHeading(scope.azimuth);
-  const rel = signedDeltaDeg(heading, domeAz);
+  const pointing = getScopePointing(scope);
+  const hit = getScopeDomeHit(scope);
+  const hitAz = hit ? getPointAzimuthDeg(hit) : normalizeHeading(pointing.azimuthDeg);
+  const rel = signedDeltaDeg(hitAz, domeAz);
   const azPass = inSlit(rel, computeSlitOpeningDeg(), state.azToleranceDeg);
 
-  if (scope.elevation > state.maxSlitOpeningDeg + 1e-6) {
+  if (pointing.elevationDeg > state.maxSlitOpeningDeg + 1e-6) {
     return {
       clear: false,
-      reason: `Blocked: elevation ${scope.elevation.toFixed(1)} deg exceeds shutter limit ${state.maxSlitOpeningDeg.toFixed(1)} deg`
+      reason: `Blocked: elevation ${pointing.elevationDeg.toFixed(1)} deg exceeds shutter limit ${state.maxSlitOpeningDeg.toFixed(1)} deg`
     };
   }
-
-  const ray = getScopeOpticalRay(scope);
-  const hit = intersectRayWithDome(ray.origin, ray.dir, state.domeRadiusMm);
 
   if (!hit) {
     return {
@@ -235,7 +427,8 @@ function evaluateScopeSlitVisibility(scope) {
     domeAz,
     getEffectiveSlitWidthMm(),
     state.domeRadiusMm,
-    state.azToleranceDeg
+    state.azToleranceDeg,
+    state.maxSlitOpeningDeg
   );
 
   if (!azPass || !slitPass) {
@@ -426,104 +619,208 @@ function buildDomeSlitRibbon3D(radiusMm, slitAzDeg, slitWidthMm, wallHeightMm, s
   return { leftWall, rightWall, leftCap, rightCap };
 }
 
+function buildTopSlitFootprint(radiusMm, slitAzDeg, slitWidthMm, wallHeightMm, shutterLimitDeg, samples = 36) {
+  const az = degToRad(slitAzDeg);
+  const dirX = Math.sin(az);
+  const dirY = Math.cos(az);
+  const tanX = Math.cos(az);
+  const tanY = -Math.sin(az);
+  const halfWidth = Math.min(slitWidthMm * 0.5, radiusMm * 0.96);
+  const wallTop = clamp(wallHeightMm, 0, radiusMm);
+  const zMax = radiusMm + radiusMm * Math.sin(degToRad(clamp(shutterLimitDeg, 0, 90)));
+  const left = [];
+  const right = [];
+
+  for (let i = 0; i <= samples; i += 1) {
+    const t = i / samples;
+    const z = wallTop + t * (zMax - wallTop);
+    const r = domeRadiusAtHeight(z, radiusMm);
+    const cx = dirX * r;
+    const cy = dirY * r;
+    left.push(v3(cx + tanX * halfWidth, cy + tanY * halfWidth, z));
+    right.push(v3(cx - tanX * halfWidth, cy - tanY * halfWidth, z));
+  }
+
+  return { left, right };
+}
+
+function getEqMountGeometry(scope) {
+  const up = v3(0, 0, 1);
+  const mountScope = getMountScope() ?? scope;
+  const mount = v3(mountScope.posEW, mountScope.posNS, mountScope.posUD);
+  const pointing = getScopePointing(scope);
+  const optical = pointing.optical;
+  const latAbs = degToRad(clamp(Math.abs(state.latitudeDeg), 0, 89.5));
+  const hemiSign = state.latitudeDeg >= 0 ? 1 : -1;
+  const raUnit = v3Norm(v3(0, hemiSign * Math.cos(latAbs), Math.sin(latAbs)));
+  let decUnit = v3Norm(v3Cross(raUnit, optical));
+  if (Math.hypot(decUnit.x, decUnit.y, decUnit.z) < 1e-6) decUnit = v3Norm(v3Cross(raUnit, up));
+  if (Math.hypot(decUnit.x, decUnit.y, decUnit.z) < 1e-6) decUnit = v3(1, 0, 0);
+
+  const pierSideSign = getEqPierSide(scope) === "EAST" ? -1 : 1;
+  const pierTop = v3Add(mount, v3(0, 0, 80));
+  const wedgeBack = v3Add(pierTop, v3Scale(raUnit, -110));
+  const wedgeFront = v3Add(pierTop, v3Scale(raUnit, 105));
+  const raShoulder = v3Add(wedgeFront, v3Scale(raUnit, 70));
+  const raHead = v3Add(raShoulder, v3Scale(raUnit, Math.max(120, mountScope.gemAxisLength)));
+  const telescopeOffset = Math.max(70, mountScope.lateralAxisLength * 0.5);
+  const sideDir = v3Scale(decUnit, pierSideSign);
+  const baseSaddle = v3Add(raHead, v3Scale(sideDir, telescopeOffset));
+  const otaOffset = getOtaOffset(scope, optical, sideDir);
+  const saddle = v3Add(baseSaddle, otaOffset);
+  const saddleBack = v3Add(raHead, v3Add(v3Scale(sideDir, Math.max(44, telescopeOffset * 0.55)), otaOffset));
+  const tubeLen = Math.max(120, Number(scope.tubeLengthMm) || 760);
+  const tubeBack = v3Add(saddle, v3Scale(optical, -tubeLen * 0.42));
+  const tubeFront = v3Add(saddle, v3Scale(optical, tubeLen * 0.58));
+  const cwBarLen = Math.max(300, mountScope.lateralAxisLength + mountScope.gemAxisLength * 0.7);
+  const cwEnd = v3Add(raHead, v3Scale(sideDir, -cwBarLen));
+  const cwWeightOuter = v3Add(raHead, v3Scale(sideDir, -cwBarLen * 0.82));
+  const cwWeightInner = v3Add(raHead, v3Scale(sideDir, -cwBarLen * 0.62));
+  const decA = v3Add(baseSaddle, v3Scale(sideDir, 70));
+  const decB = cwEnd;
+
+  return {
+    mount,
+    optical,
+    pierTop,
+    wedgeBack,
+    wedgeFront,
+    raShoulder,
+    raHead,
+    decA,
+    decB,
+    saddle,
+    saddleBack,
+    tubeBack,
+    tubeFront,
+    cwEnd,
+    cwWeightOuter,
+    cwWeightInner
+  };
+}
+
+function getAzOtaGeometry(scope) {
+  const up = v3(0, 0, 1);
+  const mountScope = getMountScope() ?? scope;
+  const mount = v3(mountScope.posEW, mountScope.posNS, mountScope.posUD);
+  const pointing = getScopePointing(scope);
+  const optical = pointing.optical;
+  const az = degToRad(pointing.azimuthDeg);
+  const horiz = v3(Math.sin(az), Math.cos(az), 0);
+  const azHead = v3(mount.x, mount.y, mount.z + Math.max(110, mountScope.gemAxisLength * 0.45));
+  let sideDir = v3Norm(v3Cross(up, horiz));
+  if (Math.hypot(sideDir.x, sideDir.y, sideDir.z) < 1e-6) sideDir = v3(1, 0, 0);
+  const saddle = v3Add(azHead, getOtaOffset(scope, optical, sideDir));
+  const tubeLen = Math.max(120, Number(scope.tubeLengthMm) || 760);
+  return {
+    mount,
+    optical,
+    azHead,
+    sideDir,
+    saddle,
+    barA: v3Add(azHead, v3Scale(sideDir, 85)),
+    barB: v3Add(azHead, v3Scale(sideDir, -85)),
+    tubeBack: v3Add(saddle, v3Scale(optical, -tubeLen * 0.42)),
+    tubeFront: v3Add(saddle, v3Scale(optical, tubeLen * 0.58))
+  };
+}
+
 function buildMountScopeScene3D() {
   const up = v3(0, 0, 1);
   const scene = [];
+  const mountScope = getMountScope();
 
   state.telescopes.forEach((scope, idx) => {
     const color = palette[idx % palette.length];
-    const mount = v3(scope.posEW, scope.posNS, scope.posUD);
-    const az = degToRad(scope.azimuth);
-    const el = degToRad(scope.elevation);
-    const horiz = v3(Math.sin(az), Math.cos(az), 0);
-    const optical = v3Norm(v3Add(v3Scale(horiz, Math.cos(el)), v3(0, 0, Math.sin(el))));
+    const isMountOwner = scope === mountScope;
+    const mountConfig = mountScope ?? scope;
+    const mount = v3(mountConfig.posEW, mountConfig.posNS, mountConfig.posUD);
+    const pointing = getScopePointing(scope);
+    const optical = pointing.optical;
+    const az = degToRad(pointing.azimuthDeg);
     const scopeFill = hexToRgba(color, 0.35);
 
     const rods = [];
     const circles = [];
     const labels = [];
 
-    rods.push({
-      a: v3(mount.x, mount.y, 0),
-      b: mount,
-      diameterMm: 190,
-      fill: "rgba(126,145,176,0.55)",
-      stroke: "rgba(230,240,255,0.7)",
-      swMm: 10
-    });
-
-    if (scope.mountType === "EQ") {
-      const latAbs = degToRad(clamp(Math.abs(state.latitudeDeg), 0, 89.5));
-      const hemiSign = state.latitudeDeg >= 0 ? 1 : -1;
-      const raUnit = v3Norm(v3(0, hemiSign * Math.cos(latAbs), Math.sin(latAbs)));
-      let decUnit = v3Norm(v3Cross(raUnit, up));
-      if (Math.hypot(decUnit.x, decUnit.y, decUnit.z) < 1e-6) decUnit = v3(1, 0, 0);
-
-      const raLen = Math.max(120, scope.gemAxisLength);
-      const raHead = v3Add(mount, v3Scale(raUnit, raLen));
-      const decHalf = Math.max(80, scope.lateralAxisLength * 0.5);
-      const decA = v3Add(raHead, v3Scale(decUnit, decHalf));
-      const decB = v3Add(raHead, v3Scale(decUnit, -decHalf));
-
-      const saddle = v3Dot(optical, decUnit) >= 0 ? decA : decB;
-      const tubeLen = Math.max(120, Number(scope.tubeLengthMm) || 760);
-      const tubeFront = v3Add(saddle, v3Scale(optical, tubeLen));
-
-      const cwStart = v3Add(mount, v3Scale(raUnit, -Math.max(35, scope.gemAxisLength * 0.08)));
-      const cwEnd = v3Add(cwStart, v3Scale(raUnit, -Math.max(220, scope.gemAxisLength * 1.05)));
-      const cwMid = v3Add(cwStart, v3Scale(raUnit, -Math.max(220, scope.gemAxisLength * 1.05) * 0.7));
-
-      rods.push({ a: mount, b: raHead, diameterMm: 140, fill: "rgba(147,168,201,0.5)", stroke: color, swMm: 9 });
-      rods.push({ a: decA, b: decB, diameterMm: 95, fill: "rgba(190,209,232,0.5)", stroke: "rgba(235,245,255,0.95)", swMm: 8 });
+    if (isMountOwner) {
       rods.push({
-        a: saddle,
-        b: tubeFront,
-        diameterMm: Math.max(48, scope.telescopeDiameterMm),
-        fill: scopeFill,
-        stroke: color,
-        swMm: 8,
-        isTube: true
+        a: v3(mount.x, mount.y, 0),
+        b: mount,
+        diameterMm: 190,
+        fill: "rgba(126,145,176,0.55)",
+        stroke: "rgba(230,240,255,0.7)",
+        swMm: 10
       });
-      rods.push({ a: mount, b: cwStart, diameterMm: 62, fill: "rgba(206,219,239,0.55)", stroke: "rgba(236,245,255,0.95)", swMm: 7 });
-      rods.push({ a: cwStart, b: cwEnd, diameterMm: 38, fill: "rgba(225,236,249,0.62)", stroke: "rgba(244,250,255,0.98)", swMm: 6 });
-
-      circles.push({ c: mount, rMm: 70, stroke: "rgba(230,240,255,0.85)", fill: "rgba(114,137,175,0.32)", swMm: 14 });
-      circles.push({ c: raHead, rMm: 40, stroke: "rgba(227,240,255,0.9)", fill: "rgba(173,199,236,0.45)", swMm: 8 });
-      circles.push({ c: tubeFront, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.26)", swMm: 8, isAperture: true });
-      circles.push({ c: cwEnd, rMm: 55, stroke: "rgba(240,248,255,0.95)", fill: "rgba(217,229,248,0.72)", swMm: 8 });
-      circles.push({ c: cwMid, rMm: 42, stroke: "rgba(240,248,255,0.95)", fill: "rgba(217,229,248,0.72)", swMm: 8 });
-
-      labels.push({ p: raHead, text: "RA", color: "#d6e8ff" });
-      labels.push({ p: saddle, text: "DEC", color: "#d6e8ff" });
-      labels.push({ p: cwStart, text: "CW", color: "#d6e8ff" });
-    } else {
-      const azHead = v3(mount.x, mount.y, mount.z + Math.max(110, scope.gemAxisLength * 0.45));
-      let altAxis = v3Norm(v3Cross(up, horiz));
-      if (Math.hypot(altAxis.x, altAxis.y, altAxis.z) < 1e-6) altAxis = v3(1, 0, 0);
-      const barA = v3Add(azHead, v3Scale(altAxis, 85));
-      const barB = v3Add(azHead, v3Scale(altAxis, -85));
-      const tubeLen = Math.max(120, Number(scope.tubeLengthMm) || 760);
-      const tubeFront = v3Add(azHead, v3Scale(optical, tubeLen));
-
-      rods.push({ a: mount, b: azHead, diameterMm: 135, fill: "rgba(147,168,201,0.5)", stroke: color, swMm: 9 });
-      rods.push({ a: azHead, b: barA, diameterMm: 80, fill: "rgba(190,209,232,0.5)", stroke: "rgba(235,245,255,0.95)", swMm: 7 });
-      rods.push({ a: azHead, b: barB, diameterMm: 80, fill: "rgba(190,209,232,0.5)", stroke: "rgba(235,245,255,0.95)", swMm: 7 });
-      rods.push({ a: barA, b: barB, diameterMm: 70, fill: "rgba(206,219,239,0.48)", stroke: "rgba(234,245,255,0.9)", swMm: 6 });
-      rods.push({
-        a: azHead,
-        b: tubeFront,
-        diameterMm: Math.max(48, scope.telescopeDiameterMm),
-        fill: scopeFill,
-        stroke: color,
-        swMm: 8,
-        isTube: true
-      });
-
-      circles.push({ c: mount, rMm: 70, stroke: "rgba(230,240,255,0.85)", fill: "rgba(114,137,175,0.32)", swMm: 14 });
-      circles.push({ c: tubeFront, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.28)", swMm: 8, isAperture: true });
     }
 
-    labels.push({ p: mount, text: scope.name, color });
+    if (mountConfig.mountType === "EQ") {
+      const geometry = getEqMountGeometry(scope);
+
+      if (isMountOwner) {
+        rods.push({ a: mount, b: geometry.pierTop, diameterMm: 210, fill: "rgba(126,145,176,0.58)", stroke: "rgba(230,240,255,0.76)", swMm: 10 });
+        rods.push({ a: geometry.wedgeBack, b: geometry.pierTop, diameterMm: 110, fill: "rgba(166,184,211,0.52)", stroke: "rgba(235,245,255,0.78)", swMm: 8 });
+        rods.push({ a: geometry.pierTop, b: geometry.wedgeFront, diameterMm: 124, fill: "rgba(166,184,211,0.52)", stroke: "rgba(235,245,255,0.78)", swMm: 8 });
+        rods.push({ a: geometry.wedgeFront, b: geometry.raShoulder, diameterMm: 148, fill: "rgba(147,168,201,0.56)", stroke: color, swMm: 9 });
+        rods.push({ a: geometry.raShoulder, b: geometry.raHead, diameterMm: 140, fill: "rgba(147,168,201,0.5)", stroke: color, swMm: 9 });
+        rods.push({ a: geometry.decA, b: geometry.decB, diameterMm: 82, fill: "rgba(190,209,232,0.5)", stroke: "rgba(235,245,255,0.95)", swMm: 8 });
+      }
+      rods.push({ a: geometry.raHead, b: geometry.saddleBack, diameterMm: 106, fill: "rgba(196,214,236,0.54)", stroke: "rgba(238,246,255,0.96)", swMm: 7 });
+      rods.push({
+        a: geometry.tubeBack,
+        b: geometry.tubeFront,
+        diameterMm: Math.max(48, scope.telescopeDiameterMm),
+        fill: scopeFill,
+        stroke: color,
+        swMm: 8,
+        isTube: true
+      });
+      circles.push({ c: geometry.tubeFront, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.26)", swMm: 8, isAperture: true });
+
+      if (isMountOwner) {
+        rods.push({ a: geometry.raHead, b: geometry.cwEnd, diameterMm: 28, fill: "rgba(225,236,249,0.58)", stroke: "rgba(244,250,255,0.96)", swMm: 5, isCounterweightBar: true });
+        circles.push({ c: mount, rMm: 70, stroke: "rgba(230,240,255,0.85)", fill: "rgba(114,137,175,0.32)", swMm: 14 });
+        circles.push({ c: geometry.pierTop, rMm: 54, stroke: "rgba(230,240,255,0.88)", fill: "rgba(124,149,186,0.36)", swMm: 10 });
+        circles.push({ c: geometry.raShoulder, rMm: 48, stroke: "rgba(227,240,255,0.92)", fill: "rgba(162,188,223,0.48)", swMm: 8 });
+        circles.push({ c: geometry.raHead, rMm: 58, stroke: "rgba(245,250,255,0.96)", fill: "rgba(74,95,122,0.16)", swMm: 4 });
+        circles.push({ c: geometry.raHead, rMm: 47, stroke: "rgba(238,246,255,0.94)", fill: "rgba(122,146,182,0.16)", swMm: 6 });
+        circles.push({ c: geometry.raHead, rMm: 36, stroke: "rgba(235,245,255,0.95)", fill: "rgba(180,202,231,0.46)", swMm: 7 });
+        circles.push({ c: geometry.cwWeightOuter, rMm: 150, stroke: "rgba(240,248,255,0.98)", fill: "rgba(217,229,248,0.82)", swMm: 10, isCounterweight: true });
+        circles.push({ c: geometry.cwWeightInner, rMm: 115, stroke: "rgba(240,248,255,0.95)", fill: "rgba(217,229,248,0.76)", swMm: 9, isCounterweight: true });
+        labels.push({ p: geometry.raHead, text: "RA/DEC", color: "#d6e8ff" });
+        labels.push({ p: geometry.cwWeightInner, text: "CW", color: "#d6e8ff" });
+      }
+
+      labels.push({ p: geometry.saddle, text: scope.name, color });
+    } else {
+      const geometry = getAzOtaGeometry(scope);
+      const azHead = geometry.azHead;
+      const horiz = v3(Math.sin(az), Math.cos(az), 0);
+      if (isMountOwner) {
+        let altAxis = v3Norm(v3Cross(up, horiz));
+        if (Math.hypot(altAxis.x, altAxis.y, altAxis.z) < 1e-6) altAxis = v3(1, 0, 0);
+        rods.push({ a: mount, b: azHead, diameterMm: 135, fill: "rgba(147,168,201,0.5)", stroke: color, swMm: 9 });
+        rods.push({ a: azHead, b: geometry.barA, diameterMm: 80, fill: "rgba(190,209,232,0.5)", stroke: "rgba(235,245,255,0.95)", swMm: 7 });
+        rods.push({ a: azHead, b: geometry.barB, diameterMm: 80, fill: "rgba(190,209,232,0.5)", stroke: "rgba(235,245,255,0.95)", swMm: 7 });
+        rods.push({ a: geometry.barA, b: geometry.barB, diameterMm: 70, fill: "rgba(206,219,239,0.48)", stroke: "rgba(234,245,255,0.9)", swMm: 6 });
+      }
+      rods.push({
+        a: geometry.tubeBack,
+        b: geometry.tubeFront,
+        diameterMm: Math.max(48, scope.telescopeDiameterMm),
+        fill: scopeFill,
+        stroke: color,
+        swMm: 8,
+        isTube: true
+      });
+
+      if (isMountOwner) {
+        circles.push({ c: mount, rMm: 70, stroke: "rgba(230,240,255,0.85)", fill: "rgba(114,137,175,0.32)", swMm: 14 });
+      }
+      circles.push({ c: geometry.tubeFront, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.28)", swMm: 8, isAperture: true });
+      labels.push({ p: geometry.saddle, text: scope.name, color });
+    }
 
     scene.push({ color, rods, circles, labels });
   });
@@ -551,6 +848,10 @@ function radiusPxFromMm(mm, scale, minPx = 2) {
 
 function tubePxFromMm(mm, scale, minPx = 4) {
   return Math.max(minPx, mm * scale * 0.75);
+}
+
+function counterweightPxFromMm(mm, scale, minPx = 7) {
+  return Math.max(minPx, mm * scale * 1.15);
 }
 
 function hexToRgba(hex, alpha = 1) {
@@ -649,7 +950,11 @@ function renderSceneTop(svg, scene, cx, cy, scale) {
         svg,
         a,
         b,
-        rod.isTube ? tubePxFromMm(rod.diameterMm, scale, 4) : strokePxFromMm(rod.diameterMm, scale, 4),
+        rod.isTube
+          ? tubePxFromMm(rod.diameterMm, scale, 4)
+          : rod.isCounterweightBar
+            ? counterweightPxFromMm(rod.diameterMm, scale, 4)
+            : strokePxFromMm(rod.diameterMm, scale, 4),
         rod.fill,
         rod.stroke,
         strokePxFromMm(rod.swMm ?? 8, scale, 1)
@@ -662,7 +967,11 @@ function renderSceneTop(svg, scene, cx, cy, scale) {
         svgEl("circle", {
           cx: p.x,
           cy: p.y,
-          r: c.isAperture ? tubePxFromMm(c.rMm * 2, scale, 3) * 0.5 : radiusPxFromMm(c.rMm, scale, 2.4),
+          r: c.isAperture
+            ? tubePxFromMm(c.rMm * 2, scale, 3) * 0.5
+            : c.isCounterweight
+              ? counterweightPxFromMm(c.rMm * 2, scale, 4) * 0.5
+              : radiusPxFromMm(c.rMm, scale, 2.4),
           fill: c.fill,
           stroke: c.stroke,
           "stroke-width": strokePxFromMm(c.swMm, scale, 1)
@@ -687,7 +996,11 @@ function renderSceneSide(svg, scene, sideRot, xToPx, zToPx, scale) {
         svg,
         a,
         b,
-        rod.isTube ? tubePxFromMm(rod.diameterMm, scale, 4) : strokePxFromMm(rod.diameterMm, scale, 4),
+        rod.isTube
+          ? tubePxFromMm(rod.diameterMm, scale, 4)
+          : rod.isCounterweightBar
+            ? counterweightPxFromMm(rod.diameterMm, scale, 4)
+            : strokePxFromMm(rod.diameterMm, scale, 4),
         rod.fill,
         rod.stroke,
         strokePxFromMm(rod.swMm ?? 8, scale, 1)
@@ -700,7 +1013,11 @@ function renderSceneSide(svg, scene, sideRot, xToPx, zToPx, scale) {
         svgEl("circle", {
           cx: p.x,
           cy: p.y,
-          r: c.isAperture ? tubePxFromMm(c.rMm * 2, scale, 3) * 0.5 : radiusPxFromMm(c.rMm, scale, 2.2),
+          r: c.isAperture
+            ? tubePxFromMm(c.rMm * 2, scale, 3) * 0.5
+            : c.isCounterweight
+              ? counterweightPxFromMm(c.rMm * 2, scale, 4) * 0.5
+              : radiusPxFromMm(c.rMm, scale, 2.2),
           fill: c.fill,
           stroke: c.stroke,
           "stroke-width": strokePxFromMm(c.swMm, scale, 1)
@@ -713,6 +1030,76 @@ function renderSceneSide(svg, scene, sideRot, xToPx, zToPx, scale) {
       svg.append(svgEl("text", { x: p.x + 7, y: p.y - 6, fill: lb.color, "font-size": 10 }));
       svg.lastChild.textContent = lb.text;
     });
+  });
+}
+
+function getLaserSegments() {
+  if (!state.showLaserLine) return [];
+  return state.telescopes
+    .map((scope, idx) => {
+      const ray = getScopeOpticalRay(scope);
+      const hit = getScopeDomeHit(scope);
+      if (!hit) return null;
+      return {
+        color: palette[idx % palette.length],
+        start: ray.origin,
+        end: hit
+      };
+    })
+    .filter(Boolean);
+}
+
+function renderLaserTop(svg, cx, cy, scale) {
+  getLaserSegments().forEach((laser) => {
+    const a = projectTopPt(laser.start, cx, cy, scale);
+    const b = projectTopPt(laser.end, cx, cy, scale);
+    svg.append(
+      svgEl("line", {
+        x1: a.x,
+        y1: a.y,
+        x2: b.x,
+        y2: b.y,
+        stroke: "rgba(99,255,157,0.92)",
+        "stroke-width": 2.2,
+        "stroke-linecap": "round",
+        "stroke-dasharray": "8 5"
+      }),
+      svgEl("circle", {
+        cx: b.x,
+        cy: b.y,
+        r: 4.5,
+        fill: "rgba(99,255,157,0.9)",
+        stroke: "rgba(215,255,228,0.95)",
+        "stroke-width": 1.2
+      })
+    );
+  });
+}
+
+function renderLaserSide(svg, sideRot, xToPx, zToPx) {
+  getLaserSegments().forEach((laser) => {
+    const a = projectSidePt(laser.start, sideRot, xToPx, zToPx);
+    const b = projectSidePt(laser.end, sideRot, xToPx, zToPx);
+    svg.append(
+      svgEl("line", {
+        x1: a.x,
+        y1: a.y,
+        x2: b.x,
+        y2: b.y,
+        stroke: "rgba(99,255,157,0.92)",
+        "stroke-width": 2.2,
+        "stroke-linecap": "round",
+        "stroke-dasharray": "8 5"
+      }),
+      svgEl("circle", {
+        cx: b.x,
+        cy: b.y,
+        r: 4.5,
+        fill: "rgba(99,255,157,0.9)",
+        stroke: "rgba(215,255,228,0.95)",
+        "stroke-width": 1.2
+      })
+    );
   });
 }
 
@@ -762,7 +1149,7 @@ function drawTopView() {
     })
   );
 
-  const slitRibbon = buildDomeSlitRibbon3D(
+  const slitFootprint = buildTopSlitFootprint(
     state.domeRadiusMm,
     domeAzimuthDeg,
     getEffectiveSlitWidthMm(),
@@ -770,8 +1157,8 @@ function drawTopView() {
     state.maxSlitOpeningDeg,
     36
   );
-  const topLeft = slitRibbon.leftCap.map((pt) => projectTopPt(pt, cx, cy, scale));
-  const topRight = slitRibbon.rightCap.map((pt) => projectTopPt(pt, cx, cy, scale)).reverse();
+  const topLeft = slitFootprint.left.map((pt) => projectTopPt(pt, cx, cy, scale));
+  const topRight = slitFootprint.right.map((pt) => projectTopPt(pt, cx, cy, scale)).reverse();
   const slitPolyPts = [...topLeft, ...topRight].map((pt) => `${pt.x},${pt.y}`).join(" ");
 
   if (slitPolyPts.length > 0) {
@@ -800,6 +1187,7 @@ function drawTopView() {
 
   const scene = buildMountScopeScene3D();
   renderSceneTop(svg, scene, cx, cy, scale);
+  renderLaserTop(svg, cx, cy, scale);
 
   const domeTarget = getDomeTargetAzimuthDeg();
   const domeErr = Math.abs(signedDeltaDeg(domeTarget, domeAzimuthDeg));
@@ -893,6 +1281,7 @@ function drawSideView() {
 
   const scene = buildMountScopeScene3D();
   renderSceneSide(svg, scene, sideRot, xToPx, zToPx, scale);
+  renderLaserSide(svg, sideRot, xToPx, zToPx);
 
   const yStepMm = Math.max(500, Math.round(totalH / 6 / 100) * 100);
   for (let mm = 0; mm <= Math.ceil(totalH); mm += yStepMm) {
@@ -923,12 +1312,15 @@ function drawDiagnostics() {
     const row = document.createElement("div");
     row.className = "diag-line";
 
-    const heading = normalizeHeading(scope.azimuth);
+    const pointing = getScopePointing(scope);
+    const heading = normalizeHeading(pointing.azimuthDeg);
     const visibility = evaluateScopeSlitVisibility(scope);
 
     const left = document.createElement("span");
     left.style.color = palette[idx % palette.length];
-    left.textContent = `${scope.name}: Az ${heading.toFixed(0)} deg, El ${scope.elevation.toFixed(0)} deg, D ${scope.telescopeDiameterMm.toFixed(0)} mm, L ${scope.tubeLengthMm.toFixed(0)} mm`;
+    left.textContent = scope.mountType === "EQ"
+      ? `${scope.name}: HA ${normalizeSignedDeg(scope.hourAngleDeg).toFixed(0)} deg, Dec ${scope.declinationDeg.toFixed(0)} deg, Az ${heading.toFixed(0)} deg, El ${pointing.elevationDeg.toFixed(0)} deg`
+      : `${scope.name}: Az ${heading.toFixed(0)} deg, El ${pointing.elevationDeg.toFixed(0)} deg, D ${scope.telescopeDiameterMm.toFixed(0)} mm, L ${scope.tubeLengthMm.toFixed(0)} mm`;
 
     const right = document.createElement("span");
     right.className = visibility.clear ? "diag-ok" : "diag-warn";
@@ -1007,35 +1399,67 @@ function makeSelectField(scope, key, label, opts) {
 function renderScopeCards() {
   const wrap = document.getElementById("telescopes-container");
   wrap.innerHTML = "";
+  const mountScope = getMountScope();
 
   for (let i = 0; i < state.telescopes.length; i += 1) {
     const scope = state.telescopes[i];
+    const pointing = getScopePointing(scope);
+    const isMountOwner = scope === mountScope;
+    const mountConfig = mountScope ?? scope;
 
     const card = document.createElement("article");
     card.className = "scope-card";
+    const isEq = mountConfig.mountType === "EQ";
+    const trackLabel = isTrackingScope(mountConfig.id) ? "Stop Tracking" : "Track Mount";
+    const removeButton = isMountOwner
+      ? `<button class="remove-scope" data-id="${scope.id}" type="button" disabled>Mount Owner</button>`
+      : `<button class="remove-scope" data-id="${scope.id}" type="button">Remove</button>`;
+    const mountControls = isMountOwner
+      ? `
+        ${makeSelectField(scope, "mountType", "Mount Type", ["EQ", "AZ"])}
+        ${makeNumberField(scope, "posNS", "Mount N/S (mm)", -5000, 5000, 10)}
+        ${makeNumberField(scope, "posEW", "Mount E/W (mm)", -5000, 5000, 10)}
+        ${makeNumberField(scope, "posUD", "Mount Up/Down (mm)", -5000, 5000, 10)}
+        ${makeNumberField(scope, "gemAxisLength", "Mount Axis Length (mm)", 0, 5000, 10)}
+        ${makeNumberField(scope, "lateralAxisLength", "DEC/CW Axis Length (mm)", 0, 5000, 10)}
+        ${isEq ? makeSelectField(scope, "pierSideMode", "Meridian Flip", ["AUTO", "MANUAL"]) : ""}
+        ${isEq ? makeSelectField(scope, "pierSide", "Pier Side", ["WEST", "EAST"]) : ""}
+        ${isEq
+          ? makeNumberField(scope, "hourAngleDeg", "RA Axis / Hour Angle (deg)", -180, 180, 1)
+          : makeNumberField(scope, "azimuth", "Move Scope Azimuth (deg)", 0, 359, 1)}
+        ${isEq
+          ? makeNumberField(scope, "declinationDeg", "DEC Axis / Declination (deg)", -90, 90, 1)
+          : makeNumberField(scope, "elevation", "Move Scope Elevation (deg)", 0, 89, 1)}
+      `
+      : `
+        ${makeSelectField(scope, "otaLayout", "OTA Layout", ["SIDE_BY_SIDE", "PIGGYBACK"])}
+        ${makeNumberField(scope, "otaSideOffsetMm", "Side Offset (mm)", -2000, 2000, 10)}
+        ${makeNumberField(scope, "otaPiggybackOffsetMm", "Piggyback Height (mm)", 0, 2000, 10)}
+      `;
     card.innerHTML = `
       <div class="scope-card-header">
         <h4>${scope.name}</h4>
-        <button class="remove-scope" data-id="${scope.id}" type="button">Remove</button>
+        ${removeButton}
       </div>
+
+      <p class="scope-mode-note">
+        ${isMountOwner
+          ? isEq
+            ? `Shared EQ mount: HA ${normalizeSignedDeg(mountConfig.hourAngleDeg).toFixed(0)} deg, Dec ${mountConfig.declinationDeg.toFixed(0)} deg, Pier ${getEqPierSide(scope)}, derived Az ${pointing.azimuthDeg.toFixed(0)} deg, El ${pointing.elevationDeg.toFixed(0)} deg`
+            : `Shared AZ mount: Az ${pointing.azimuthDeg.toFixed(0)} deg, El ${pointing.elevationDeg.toFixed(0)} deg`
+          : `Secondary OTA: ${scope.otaLayout === "PIGGYBACK" ? "piggyback" : "side-by-side"}, side ${Number(scope.otaSideOffsetMm || 0).toFixed(0)} mm, piggyback ${Number(scope.otaPiggybackOffsetMm || 0).toFixed(0)} mm`}
+      </p>
 
       <div class="scope-grid">
-        ${makeSelectField(scope, "mountType", "Mount Type", ["EQ", "AZ"])}
         ${makeTextField(scope, "name", "Name", "text")}
-        ${makeNumberField(scope, "posNS", "Position N/S (mm)", -5000, 5000, 10)}
-        ${makeNumberField(scope, "posEW", "Position E/W (mm)", -5000, 5000, 10)}
-        ${makeNumberField(scope, "posUD", "Position Up/Down (mm)", -5000, 5000, 10)}
-        ${makeNumberField(scope, "gemAxisLength", "GEM Axis Length (mm)", 0, 5000, 10)}
-        ${makeNumberField(scope, "lateralAxisLength", "Lateral Axis Length (mm)", 0, 5000, 10)}
+        ${mountControls}
         ${makeNumberField(scope, "telescopeDiameterMm", "Telescope Diameter (mm)", 20, 1200, 5)}
         ${makeNumberField(scope, "tubeLengthMm", "Tube Length (mm)", 120, 4000, 10)}
-        ${makeNumberField(scope, "azimuth", "Move Scope Azimuth (deg)", 0, 359, 1)}
-        ${makeNumberField(scope, "elevation", "Move Scope Elevation (deg)", 0, 89, 1)}
       </div>
 
-      <div class="move-panel">
+      <div class="move-panel" style="${isMountOwner ? "" : "display: none;"}">
         <div class="move-pad-wrap">
-          <span class="move-caption">Move Scope</span>
+          <span class="move-caption">Move Mount</span>
           <div class="move-pad">
             <button class="move-btn" data-id="${scope.id}" data-field="posNS" data-step="10" type="button">N</button>
             <button class="move-btn" data-id="${scope.id}" data-field="posUD" data-step="10" type="button">U</button>
@@ -1048,11 +1472,13 @@ function renderScopeCards() {
         </div>
 
         <div class="move-sliders">
-          <label for="${scope.id}-az-slider">Azimuth</label>
-          <input id="${scope.id}-az-slider" data-scope-id="${scope.id}" data-scope-field="azimuth" type="range" min="0" max="359" step="1" value="${scope.azimuth}">
-          <label for="${scope.id}-el-slider">Elevation</label>
-          <input id="${scope.id}-el-slider" data-scope-id="${scope.id}" data-scope-field="elevation" type="range" min="0" max="89" step="1" value="${scope.elevation}">
+          <label for="${scope.id}-az-slider">${isEq ? "RA Axis / Hour Angle" : "Azimuth"}</label>
+          <input id="${scope.id}-az-slider" data-scope-id="${scope.id}" data-scope-field="${isEq ? "hourAngleDeg" : "azimuth"}" type="range" min="${isEq ? -180 : 0}" max="${isEq ? 180 : 359}" step="1" value="${isEq ? scope.hourAngleDeg : scope.azimuth}">
+          <label for="${scope.id}-el-slider">${isEq ? "DEC Axis / Declination" : "Elevation"}</label>
+          <input id="${scope.id}-el-slider" data-scope-id="${scope.id}" data-scope-field="${isEq ? "declinationDeg" : "elevation"}" type="range" min="${isEq ? -90 : 0}" max="${isEq ? 90 : 89}" step="1" value="${isEq ? scope.declinationDeg : scope.elevation}">
         </div>
+
+        ${isEq && isMountOwner ? `<div class="track-row"><button class="track-scope" data-id="${scope.id}" type="button">${trackLabel}</button></div>` : ""}
       </div>
     `;
 
@@ -1060,6 +1486,7 @@ function renderScopeCards() {
 
     card.querySelector(".remove-scope").addEventListener("click", () => {
       if (state.telescopes.length === 1) return;
+      if (runtime.trackingScopeId === scope.id) stopTrackingTelescope();
       state.telescopes = state.telescopes.filter((t) => t.id !== scope.id);
       if (!state.telescopes.find((t) => t.id === Number(state.followScopeId))) {
         state.followScopeId = state.telescopes[0]?.id ?? 1;
@@ -1076,7 +1503,7 @@ function renderScopeCards() {
         const target = state.telescopes.find((t) => t.id === id);
         if (!target) return;
 
-        if (field === "name" || field === "mountType") {
+        if (field === "name" || field === "mountType" || field === "pierSideMode" || field === "pierSide" || field === "otaLayout") {
           target[field] = e.target.value;
         } else {
           const parsed = Number(e.target.value);
@@ -1084,12 +1511,28 @@ function renderScopeCards() {
           target[field] = parsed;
         }
 
+        if ((field === "mountType" || field === "pierSideMode") && runtime.trackingScopeId === target.id) {
+          stopTrackingTelescope();
+        }
+        if (field === "mountType" || field === "pierSideMode") {
+          renderScopeCards();
+        }
         if (field === "azimuth") target.azimuth = normalizeHeading(target.azimuth);
         if (field === "elevation") target.elevation = clamp(target.elevation, 0, 89);
+        if (field === "hourAngleDeg") target.hourAngleDeg = normalizeSignedDeg(target.hourAngleDeg);
+        if (field === "declinationDeg") target.declinationDeg = clamp(target.declinationDeg, -90, 90);
         if (field === "telescopeDiameterMm") target.telescopeDiameterMm = Math.max(20, target.telescopeDiameterMm);
         if (field === "tubeLengthMm") target.tubeLengthMm = Math.max(120, target.tubeLengthMm);
+        if (field === "otaPiggybackOffsetMm") target.otaPiggybackOffsetMm = Math.max(0, target.otaPiggybackOffsetMm);
 
         renderAll();
+      });
+    }
+
+    const trackBtn = card.querySelector(".track-scope");
+    if (trackBtn) {
+      trackBtn.addEventListener("click", () => {
+        startTrackingTelescope(scope.id);
       });
     }
 
@@ -1220,6 +1663,22 @@ function renderGlobalControls() {
   followScopeField.append(scopeLabel, scopeSelect);
   host.appendChild(followScopeField);
 
+  const laserToggleField = document.createElement("div");
+  laserToggleField.className = "field";
+  const laserLabel = document.createElement("label");
+  laserLabel.setAttribute("for", "show-laser-line");
+  laserLabel.textContent = "Show Laser Line";
+  const laserInput = document.createElement("input");
+  laserInput.id = "show-laser-line";
+  laserInput.type = "checkbox";
+  laserInput.checked = state.showLaserLine;
+  laserInput.addEventListener("change", () => {
+    state.showLaserLine = laserInput.checked;
+    renderAll();
+  });
+  laserToggleField.append(laserLabel, laserInput);
+  host.appendChild(laserToggleField);
+
   const slewToggleField = document.createElement("div");
   slewToggleField.className = "field";
   const slewLabel = document.createElement("label");
@@ -1252,7 +1711,11 @@ function renderGlobalControls() {
 function wireButtons() {
   const addBtn = document.getElementById("add-scope");
   addBtn.addEventListener("click", () => {
-    state.telescopes.push(createScope(nextScopeId));
+    const ota = createScope(nextScopeId);
+    ota.otaLayout = "SIDE_BY_SIDE";
+    ota.otaSideOffsetMm = 320 * (state.telescopes.length % 2 === 0 ? -1 : 1);
+    ota.otaPiggybackOffsetMm = 180;
+    state.telescopes.push(ota);
     state.followScopeId = state.followScopeId || nextScopeId;
     nextScopeId += 1;
     renderGlobalControls();
