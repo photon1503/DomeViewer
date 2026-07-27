@@ -50,12 +50,15 @@ const globalControls = [
   { key: "slitWallHeightMm", label: "Slit Wall Height (mm)", min: 300, max: 12000, step: 10 },
   { key: "azToleranceDeg", label: "Azimuth Tolerance (deg)", min: 0, max: 30, step: 1 },
   { key: "latitudeDeg", label: "Latitude (deg)", min: -89, max: 89, step: 0.1 },
+  { key: "sideViewRotationDeg", label: "Side View Rotation (deg)", min: 0, max: 359, step: 1 }
+];
+
+const domeSimControls = [
   { key: "domeAzimuthDeg", label: "Dome Azimuth (deg)", min: 0, max: 359, step: 1 },
   { key: "domeSlewSpeedDegPerSec", label: "Dome Slew Speed (deg/s)", min: 0.2, max: 40, step: 0.1 },
   { key: "domeAccelDegPerSec2", label: "Dome Accel (deg/s^2)", min: 0.2, max: 100, step: 0.1 },
   { key: "domeDecelDegPerSec2", label: "Dome Decel (deg/s^2)", min: 0.2, max: 100, step: 0.1 },
-  { key: "domeSettleTimeSec", label: "Settle Time (s)", min: 0, max: 30, step: 0.1 },
-  { key: "sideViewRotationDeg", label: "Side View Rotation (deg)", min: 0, max: 359, step: 1 }
+  { key: "domeSettleTimeSec", label: "Settle Time (s)", min: 0, max: 30, step: 0.1 }
 ];
 
 function createScope(idx) {
@@ -71,6 +74,8 @@ function createScope(idx) {
     posUD: 272,
     gemAxisLength: 435,
     lateralAxisLength: 230,
+    counterweightShaftLengthMm: 820,
+    counterweightDiameterMm: 170,
     telescopeDiameterMm: 120,
     tubeLengthMm: 760,
     hourAngleDeg: 0,
@@ -663,27 +668,42 @@ function getEqMountGeometry(scope) {
   if (Math.hypot(decUnit.x, decUnit.y, decUnit.z) < 1e-6) decUnit = v3Norm(v3Cross(raUnit, up));
   if (Math.hypot(decUnit.x, decUnit.y, decUnit.z) < 1e-6) decUnit = v3(1, 0, 0);
 
-  const pierSideSign = getEqPierSide(scope) === "EAST" ? -1 : 1;
-  const pierTop = v3Add(mount, v3(0, 0, 80));
-  const wedgeBack = v3Add(pierTop, v3Scale(raUnit, -110));
-  const wedgeFront = v3Add(pierTop, v3Scale(raUnit, 105));
-  const raShoulder = v3Add(wedgeFront, v3Scale(raUnit, 70));
-  const raHead = v3Add(raShoulder, v3Scale(raUnit, Math.max(120, mountScope.gemAxisLength)));
-  const telescopeOffset = Math.max(70, mountScope.lateralAxisLength * 0.5);
+  const pierSideSign = getEqPierSide(scope) === "EAST" ? 1 : -1;
+  const pierTop = v3Add(mount, v3(0, 0, -90));
+  const wedgeBack = v3Add(mount, v3Scale(raUnit, -230));
+  const wedgeFront = v3Add(mount, v3Scale(raUnit, -70));
+  const raShoulder = v3Add(mount, v3Scale(raUnit, -170));
+  const raHead = mount;
+  const gemAxisLength = Math.max(70, Number(scope.gemAxisLength) || 435);
+  const lateralAxisLength = Number(scope.lateralAxisLength) || 0;
+  const telescopeOffset = gemAxisLength;
   const sideDir = v3Scale(decUnit, pierSideSign);
   const baseSaddle = v3Add(raHead, v3Scale(sideDir, telescopeOffset));
-  const otaOffset = getOtaOffset(scope, optical, sideDir);
+  const otaOffset = v3Add(getOtaOffset(scope, optical, sideDir), v3Scale(sideDir, lateralAxisLength));
   const saddle = v3Add(baseSaddle, otaOffset);
-  const saddleBack = v3Add(raHead, v3Add(v3Scale(sideDir, Math.max(44, telescopeOffset * 0.55)), otaOffset));
   const tubeLen = Math.max(120, Number(scope.tubeLengthMm) || 760);
-  const tubeBack = v3Add(saddle, v3Scale(optical, -tubeLen * 0.42));
-  const tubeFront = v3Add(saddle, v3Scale(optical, tubeLen * 0.58));
-  const cwBarLen = Math.max(300, mountScope.lateralAxisLength + mountScope.gemAxisLength * 0.7);
+  const tubeRadius = Math.max(24, (Number(scope.telescopeDiameterMm) || 120) * 0.5);
+  let saddleNormal = v3Norm(v3Add(up, v3Scale(optical, -v3Dot(up, optical))));
+  if (Math.hypot(saddleNormal.x, saddleNormal.y, saddleNormal.z) < 1e-6) saddleNormal = up;
+  const tubeCenterAtSaddle = v3Add(saddle, v3Scale(saddleNormal, tubeRadius + Math.max(14, tubeRadius * 0.22)));
+  const tubeBack = v3Add(tubeCenterAtSaddle, v3Scale(optical, -tubeLen / 3));
+  const tubeFront = v3Add(tubeCenterAtSaddle, v3Scale(optical, tubeLen * (2 / 3)));
+  const saddleBack = saddle;
+  const saddlePlateHalfLen = Math.min(220, Math.max(90, tubeLen * 0.18));
+  const saddlePlateBack = v3Add(saddle, v3Scale(optical, -saddlePlateHalfLen));
+  const saddlePlateFront = v3Add(saddle, v3Scale(optical, saddlePlateHalfLen));
+  const cwBarLen = Math.max(120, Number(mountScope.counterweightShaftLengthMm) || 820);
+  const cwDiameter = Math.max(30, Number(mountScope.counterweightDiameterMm) || 170);
+  const cwThickness = Math.max(45, cwDiameter * 0.42);
   const cwEnd = v3Add(raHead, v3Scale(sideDir, -cwBarLen));
-  const cwWeightOuter = v3Add(raHead, v3Scale(sideDir, -cwBarLen * 0.82));
-  const cwWeightInner = v3Add(raHead, v3Scale(sideDir, -cwBarLen * 0.62));
-  const decA = v3Add(baseSaddle, v3Scale(sideDir, 70));
-  const decB = cwEnd;
+  const cwWeightOuter = v3Add(raHead, v3Scale(sideDir, -cwBarLen * 0.9));
+  const cwWeightInner = v3Add(raHead, v3Scale(sideDir, -cwBarLen * 0.75));
+  const cwWeightOuterBack = v3Add(cwWeightOuter, v3Scale(sideDir, cwThickness * 0.5));
+  const cwWeightOuterFront = v3Add(cwWeightOuter, v3Scale(sideDir, -cwThickness * 0.5));
+  const cwWeightInnerBack = v3Add(cwWeightInner, v3Scale(sideDir, cwThickness * 0.5));
+  const cwWeightInnerFront = v3Add(cwWeightInner, v3Scale(sideDir, -cwThickness * 0.5));
+  const decA = raHead;
+  const decB = saddle;
 
   return {
     mount,
@@ -697,11 +717,18 @@ function getEqMountGeometry(scope) {
     decB,
     saddle,
     saddleBack,
+    saddlePlateBack,
+    saddlePlateFront,
     tubeBack,
     tubeFront,
     cwEnd,
     cwWeightOuter,
-    cwWeightInner
+    cwWeightOuterBack,
+    cwWeightOuterFront,
+    cwWeightInner,
+    cwWeightInnerBack,
+    cwWeightInnerFront,
+    cwDiameter
   };
 }
 
@@ -768,11 +795,13 @@ function buildMountScopeScene3D() {
         rods.push({ a: mount, b: geometry.pierTop, diameterMm: 210, fill: "rgba(126,145,176,0.58)", stroke: "rgba(230,240,255,0.76)", swMm: 10 });
         rods.push({ a: geometry.wedgeBack, b: geometry.pierTop, diameterMm: 110, fill: "rgba(166,184,211,0.52)", stroke: "rgba(235,245,255,0.78)", swMm: 8 });
         rods.push({ a: geometry.pierTop, b: geometry.wedgeFront, diameterMm: 124, fill: "rgba(166,184,211,0.52)", stroke: "rgba(235,245,255,0.78)", swMm: 8 });
-        rods.push({ a: geometry.wedgeFront, b: geometry.raShoulder, diameterMm: 148, fill: "rgba(147,168,201,0.56)", stroke: color, swMm: 9 });
-        rods.push({ a: geometry.raShoulder, b: geometry.raHead, diameterMm: 140, fill: "rgba(147,168,201,0.5)", stroke: color, swMm: 9 });
-        rods.push({ a: geometry.decA, b: geometry.decB, diameterMm: 82, fill: "rgba(190,209,232,0.5)", stroke: "rgba(235,245,255,0.95)", swMm: 8 });
+        rods.push({ a: geometry.wedgeFront, b: geometry.raShoulder, diameterMm: 118, fill: "rgba(166,184,211,0.52)", stroke: "rgba(235,245,255,0.78)", swMm: 8 });
+        rods.push({ a: geometry.raShoulder, b: geometry.raHead, diameterMm: 210, fill: "rgba(92,172,212,0.56)", stroke: color, swMm: 9, isRaHousing: true });
+        rods.push({ a: geometry.decA, b: geometry.decB, diameterMm: 122, fill: "rgba(184,204,228,0.56)", stroke: "rgba(235,245,255,0.95)", swMm: 8, isDecHousing: true });
       }
-      rods.push({ a: geometry.raHead, b: geometry.saddleBack, diameterMm: 106, fill: "rgba(196,214,236,0.54)", stroke: "rgba(238,246,255,0.96)", swMm: 7 });
+      if (!isMountOwner) {
+        rods.push({ a: geometry.raHead, b: geometry.saddleBack, diameterMm: 106, fill: "rgba(196,214,236,0.54)", stroke: "rgba(238,246,255,0.96)", swMm: 7 });
+      }
       rods.push({
         a: geometry.tubeBack,
         b: geometry.tubeFront,
@@ -781,6 +810,15 @@ function buildMountScopeScene3D() {
         stroke: color,
         swMm: 8,
         isTube: true
+      });
+      rods.push({
+        a: geometry.saddlePlateBack,
+        b: geometry.saddlePlateFront,
+        diameterMm: Math.max(70, scope.telescopeDiameterMm * 0.7),
+        fill: "rgba(220,232,247,0.66)",
+        stroke: "rgba(245,250,255,0.96)",
+        swMm: 7,
+        isSaddlePlate: true
       });
       circles.push({ c: geometry.tubeFront, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.26)", swMm: 8, isAperture: true });
 
@@ -792,8 +830,8 @@ function buildMountScopeScene3D() {
         circles.push({ c: geometry.raHead, rMm: 58, stroke: "rgba(245,250,255,0.96)", fill: "rgba(74,95,122,0.16)", swMm: 4 });
         circles.push({ c: geometry.raHead, rMm: 47, stroke: "rgba(238,246,255,0.94)", fill: "rgba(122,146,182,0.16)", swMm: 6 });
         circles.push({ c: geometry.raHead, rMm: 36, stroke: "rgba(235,245,255,0.95)", fill: "rgba(180,202,231,0.46)", swMm: 7 });
-        circles.push({ c: geometry.cwWeightOuter, rMm: 150, stroke: "rgba(240,248,255,0.98)", fill: "rgba(217,229,248,0.82)", swMm: 10, isCounterweight: true });
-        circles.push({ c: geometry.cwWeightInner, rMm: 115, stroke: "rgba(240,248,255,0.95)", fill: "rgba(217,229,248,0.76)", swMm: 9, isCounterweight: true });
+        circles.push({ c: geometry.cwWeightOuter, depthBack: geometry.cwWeightOuterBack, depthFront: geometry.cwWeightOuterFront, rMm: geometry.cwDiameter * 0.5, stroke: "rgba(240,248,255,0.98)", fill: "rgba(217,229,248,0.82)", swMm: 9, isCounterweight: true });
+        circles.push({ c: geometry.cwWeightInner, depthBack: geometry.cwWeightInnerBack, depthFront: geometry.cwWeightInnerFront, rMm: geometry.cwDiameter * 0.5, stroke: "rgba(240,248,255,0.95)", fill: "rgba(217,229,248,0.76)", swMm: 8, isCounterweight: true });
         labels.push({ p: geometry.raHead, text: "RA/DEC", color: "#d6e8ff" });
         labels.push({ p: geometry.cwWeightInner, text: "CW", color: "#d6e8ff" });
       }
@@ -935,6 +973,114 @@ function drawProjectedRod(svg, a, b, diameterPx, fill, stroke, edgeWidthPx) {
       fill,
       stroke,
       "stroke-width": Math.max(0.8, edgeWidthPx)
+    })
+  );
+}
+
+function drawProjectedBox(svg, a, b, widthPx, fill, stroke, edgeWidthPx) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 0.001) return;
+
+  const half = Math.max(3, widthPx * 0.5);
+  const nx = -dy / len;
+  const ny = dx / len;
+  const depthX = Math.max(5, half * 0.46);
+  const depthY = -Math.max(5, half * 0.34);
+  const front = [
+    { x: a.x + nx * half, y: a.y + ny * half },
+    { x: b.x + nx * half, y: b.y + ny * half },
+    { x: b.x - nx * half, y: b.y - ny * half },
+    { x: a.x - nx * half, y: a.y - ny * half }
+  ];
+  const back = front.map((pt) => ({ x: pt.x + depthX, y: pt.y + depthY }));
+  const points = (items) => items.map((pt) => `${pt.x},${pt.y}`).join(" ");
+
+  svg.append(
+    svgEl("polygon", {
+      points: points([front[1], back[1], back[2], front[2]]),
+      fill: "rgba(20,42,64,0.72)",
+      stroke,
+      "stroke-width": Math.max(0.7, edgeWidthPx * 0.75),
+      "stroke-linejoin": "round"
+    }),
+    svgEl("polygon", {
+      points: points([front[0], back[0], back[1], front[1]]),
+      fill: "rgba(146,211,239,0.34)",
+      stroke,
+      "stroke-width": Math.max(0.7, edgeWidthPx * 0.75),
+      "stroke-linejoin": "round"
+    }),
+    svgEl("polygon", {
+      points: points(front),
+      fill,
+      stroke,
+      "stroke-width": Math.max(0.9, edgeWidthPx),
+      "stroke-linejoin": "round"
+    }),
+    svgEl("line", {
+      x1: front[0].x + (front[1].x - front[0].x) * 0.16,
+      y1: front[0].y + (front[1].y - front[0].y) * 0.16,
+      x2: front[1].x - (front[1].x - front[0].x) * 0.16,
+      y2: front[1].y - (front[1].y - front[0].y) * 0.16,
+      stroke: "rgba(238,248,255,0.42)",
+      "stroke-width": Math.max(0.8, edgeWidthPx * 0.55),
+      "stroke-linecap": "round"
+    })
+  );
+}
+
+function drawProjectedCylinder(svg, back, front, radiusPx, fill, stroke, edgeWidthPx) {
+  const dx = front.x - back.x;
+  const dy = front.y - back.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 0.001) {
+    svg.append(svgEl("circle", { cx: front.x, cy: front.y, r: radiusPx, fill, stroke, "stroke-width": Math.max(0.8, edgeWidthPx) }));
+    return;
+  }
+
+  const nx = -dy / len;
+  const ny = dx / len;
+  const sideA = [
+    { x: back.x + nx * radiusPx, y: back.y + ny * radiusPx },
+    { x: front.x + nx * radiusPx, y: front.y + ny * radiusPx },
+    { x: front.x - nx * radiusPx, y: front.y - ny * radiusPx },
+    { x: back.x - nx * radiusPx, y: back.y - ny * radiusPx }
+  ];
+  const points = sideA.map((pt) => `${pt.x},${pt.y}`).join(" ");
+
+  svg.append(
+    svgEl("polygon", {
+      points,
+      fill: "rgba(204,219,238,0.62)",
+      stroke,
+      "stroke-width": Math.max(0.7, edgeWidthPx * 0.75),
+      "stroke-linejoin": "round"
+    }),
+    svgEl("circle", {
+      cx: back.x,
+      cy: back.y,
+      r: radiusPx,
+      fill: "rgba(168,188,214,0.54)",
+      stroke,
+      "stroke-width": Math.max(0.7, edgeWidthPx * 0.75)
+    }),
+    svgEl("circle", {
+      cx: front.x,
+      cy: front.y,
+      r: radiusPx,
+      fill,
+      stroke,
+      "stroke-width": Math.max(0.9, edgeWidthPx)
+    }),
+    svgEl("circle", {
+      cx: front.x - nx * radiusPx * 0.22,
+      cy: front.y - ny * radiusPx * 0.22,
+      r: radiusPx * 0.48,
+      fill: "rgba(255,255,255,0.14)",
+      stroke: "rgba(245,250,255,0.35)",
+      "stroke-width": Math.max(0.6, edgeWidthPx * 0.45)
     })
   );
 }
@@ -1116,52 +1262,140 @@ function drawMountView() {
 
   const W = 640;
   const H = 420;
-  const padX = 58;
-  const padTop = 24;
-  const padBottom = 36;
-  const R = state.domeRadiusMm;
-  const scale = Math.min((W - padX * 2) / (2 * R + 400), (H - padTop - padBottom) / (2 * R + 500));
-  const xToPx = (x) => padX + (x + R) * scale;
-  const zToPx = (z) => H - padBottom - z * scale;
+  const padX = 34;
+  const padTop = 28;
+  const padBottom = 34;
   const mountScope = getMountScope();
   if (!mountScope) return;
 
-  const domeCenter = v3(0, 0, R);
   const mountAxis = getMountAxisPoint(mountScope);
+  const scene = buildMountScopeScene3D();
+  const scenePoints = [];
+  const viewX = (pt) => pt.y + pt.x * 0.42;
+  scene.forEach((obj) => {
+    obj.rods.forEach((rod) => scenePoints.push(rod.a, rod.b));
+    obj.circles.forEach((circle) => scenePoints.push(circle.c));
+    obj.labels.forEach((label) => scenePoints.push(label.p));
+  });
+  scenePoints.push(v3(0, 0, 0), v3(mountAxis.x, mountAxis.y, 0), mountAxis);
+
+  const bounds = scenePoints.reduce(
+    (acc, pt) => ({
+      minX: Math.min(acc.minX, viewX(pt)),
+      maxX: Math.max(acc.maxX, viewX(pt)),
+      minZ: Math.min(acc.minZ, pt.z),
+      maxZ: Math.max(acc.maxZ, pt.z)
+    }),
+    { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity }
+  );
+  const annotationLeftMm = Math.min(bounds.minX, -520);
+  const annotationRightMm = Math.max(bounds.maxX, mountScope.posNS + 560);
+  const annotationTopMm = Math.max(bounds.maxZ + 150, mountAxis.z + mountScope.gemAxisLength + 260);
+  const annotationBounds = {
+    minX: annotationLeftMm,
+    maxX: annotationRightMm,
+    minZ: 0,
+    maxZ: annotationTopMm
+  };
+  const spanX = Math.max(1, annotationBounds.maxX - annotationBounds.minX);
+  const spanZ = Math.max(1, annotationBounds.maxZ - annotationBounds.minZ);
+  const usableW = W - padX * 2;
+  const usableH = H - padTop - padBottom;
+  const scale = Math.min(usableW / spanX, usableH / spanZ);
+  const offsetX = padX + (usableW - spanX * scale) / 2;
+  const offsetY = padTop + (usableH - spanZ * scale) / 2;
+  const xToPx = (northMm) => offsetX + (northMm - annotationBounds.minX) * scale;
+  const zToPx = (z) => offsetY + (annotationBounds.maxZ - z) * scale;
   const floorY = zToPx(0);
-  const centerY = zToPx(R);
-  const capPath = [];
+  const domeCenterX = xToPx(0);
+  const mountX = xToPx(mountScope.posNS);
+  const mountAxisY = zToPx(mountAxis.z);
+  const mountGeometry = mountScope.mountType === "EQ" ? getEqMountGeometry(mountScope) : null;
+  const projectMountPt = (pt) => ({ x: xToPx(viewX(pt)), y: zToPx(pt.z) });
+  const appendText = (text, attrs) => {
+    const item = svgEl("text", attrs);
+    item.textContent = text;
+    svg.append(item);
+    return item;
+  };
+  const appendGuide = (attrs) => svg.append(svgEl("line", attrs));
 
-  for (let i = 0; i <= 80; i += 1) {
-    const x = -R + (2 * R * i) / 80;
-    const z = R + Math.sqrt(Math.max(0, R * R - x * x));
-    capPath.push(`${i === 0 ? "M" : "L"} ${xToPx(x)} ${zToPx(z)}`);
+  svg.append(
+    svgEl("line", { x1: padX, y1: floorY, x2: W - padX, y2: floorY, stroke: "rgba(238,248,255,0.52)", "stroke-width": 1.4 }),
+    svgEl("line", { x1: mountX, y1: padTop, x2: mountX, y2: floorY, stroke: "rgba(255,93,255,0.72)", "stroke-width": 1.8 }),
+    svgEl("line", { x1: domeCenterX, y1: floorY, x2: domeCenterX, y2: floorY - 70, stroke: "rgba(238,248,255,0.62)", "stroke-width": 1.1, "stroke-dasharray": "4 4" })
+  );
+
+  appendGuide({ x1: mountX, y1: floorY, x2: mountX, y2: mountAxisY, stroke: "rgba(255,255,255,0.8)", "stroke-width": 1.1, "stroke-dasharray": "4 4" });
+  appendGuide({ x1: domeCenterX, y1: mountAxisY, x2: mountX, y2: mountAxisY, stroke: "rgba(255,255,255,0.8)", "stroke-width": 1.1, "stroke-dasharray": "4 4" });
+  appendGuide({ x1: mountX - 9, y1: mountAxisY, x2: mountX + 9, y2: mountAxisY, stroke: "rgba(255,255,255,0.9)", "stroke-width": 1 });
+  appendGuide({ x1: mountX - 9, y1: floorY, x2: mountX + 9, y2: floorY, stroke: "rgba(255,255,255,0.9)", "stroke-width": 1 });
+
+  const mountPt = projectMountPt(mountAxis);
+  svg.append(svgEl("circle", { cx: mountPt.x, cy: mountPt.y, r: 5.5, fill: "rgba(122,215,255,0.9)", stroke: "rgba(220,246,255,0.95)", "stroke-width": 1.5 }));
+
+  scene.forEach((obj) => {
+    obj.rods.forEach((rod) => {
+      const a = projectMountPt(rod.a);
+      const b = projectMountPt(rod.b);
+      const widthPx = rod.isTube
+        ? tubePxFromMm(rod.diameterMm, scale, 4)
+        : rod.isCounterweightBar
+          ? counterweightPxFromMm(rod.diameterMm, scale, 4)
+          : strokePxFromMm(rod.diameterMm, scale, 4);
+      if (rod.isRaHousing || rod.isDecHousing || rod.isSaddlePlate) {
+        drawProjectedBox(svg, a, b, widthPx, rod.fill, rod.stroke, strokePxFromMm(rod.swMm ?? 8, scale, 1));
+      } else {
+        drawProjectedRod(svg, a, b, widthPx, rod.fill, rod.stroke, strokePxFromMm(rod.swMm ?? 8, scale, 1));
+      }
+    });
+
+    obj.circles.forEach((c) => {
+      const p = projectMountPt(c.c);
+      if (c.isCounterweight && c.depthBack && c.depthFront) {
+        drawProjectedCylinder(
+          svg,
+          projectMountPt(c.depthBack),
+          projectMountPt(c.depthFront),
+          counterweightPxFromMm(c.rMm * 2, scale, 4) * 0.5,
+          c.fill,
+          c.stroke,
+          strokePxFromMm(c.swMm, scale, 1)
+        );
+        return;
+      }
+      svg.append(
+        svgEl("circle", {
+          cx: p.x,
+          cy: p.y,
+          r: c.isAperture
+            ? tubePxFromMm(c.rMm * 2, scale, 3) * 0.5
+            : c.isCounterweight
+              ? counterweightPxFromMm(c.rMm * 2, scale, 4) * 0.5
+              : radiusPxFromMm(c.rMm, scale, 2.2),
+          fill: c.fill,
+          stroke: c.stroke,
+          "stroke-width": strokePxFromMm(c.swMm, scale, 1)
+        })
+      );
+    });
+  });
+
+  appendGuide({ x1: mountPt.x - 36, y1: mountPt.y - 22, x2: mountPt.x - 7, y2: mountPt.y - 4, stroke: "rgba(255,114,255,0.78)", "stroke-width": 1, "stroke-dasharray": "3 3" });
+  appendText("Centre Position", { x: mountPt.x - 40, y: mountPt.y - 36, fill: "#ff72ff", "font-size": 10, "font-weight": 700, "text-anchor": "end" });
+  appendText("of Mount", { x: mountPt.x - 40, y: mountPt.y - 24, fill: "#ff72ff", "font-size": 10, "font-weight": 700, "text-anchor": "end" });
+  appendText(`${Math.abs(mountScope.posNS).toFixed(0)} mm ${mountScope.posNS >= 0 ? "North" : "South"}`, { x: mountX + 12, y: floorY - 34, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
+  appendText(`${Math.abs(mountScope.posEW).toFixed(0)} mm ${mountScope.posEW >= 0 ? "East" : "West"}`, { x: mountX + 12, y: floorY - 23, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
+  appendText("of dome center", { x: mountX + 12, y: floorY - 12, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
+  appendText(`A = ${mountAxis.z.toFixed(0)} mm`, { x: mountX + 10, y: (mountAxisY + floorY) / 2 - 5, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
+  appendText(`+Up/-Down = ${mountScope.posUD.toFixed(0)} mm`, { x: mountX + 10, y: (mountAxisY + floorY) / 2 + 7, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
+
+  if (mountGeometry) {
+    const aperturePt = projectMountPt(mountGeometry.tubeFront);
+    appendGuide({ x1: mountPt.x, y1: mountPt.y, x2: aperturePt.x, y2: aperturePt.y, stroke: "rgba(255,255,255,0.84)", "stroke-width": 1.1, "stroke-dasharray": "4 4" });
+    appendText(`GEM Axis Length = ${mountScope.gemAxisLength.toFixed(0)} mm`, { x: (mountPt.x + aperturePt.x) / 2 + 8, y: (mountPt.y + aperturePt.y) / 2 - 8, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
+    appendText(`Lateral Axis Length = ${mountScope.lateralAxisLength.toFixed(0)} mm`, { x: mountPt.x + 14, y: mountPt.y + 18, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
   }
-
-  svg.append(
-    svgEl("line", { x1: xToPx(-R) - 22, y1: floorY, x2: xToPx(R) + 22, y2: floorY, stroke: "rgba(238,248,255,0.6)", "stroke-width": 1 }),
-    svgEl("rect", { x: xToPx(-R), y: centerY, width: xToPx(R) - xToPx(-R), height: floorY - centerY, fill: "rgba(219,232,248,0.1)", stroke: "rgba(237,246,255,0.42)", "stroke-width": 2 }),
-    svgEl("path", { d: capPath.join(" "), fill: "none", stroke: "rgba(237,246,255,0.74)", "stroke-width": 2 }),
-    svgEl("line", { x1: xToPx(-R) - 12, y1: centerY, x2: xToPx(R) + 12, y2: centerY, stroke: "rgba(255,212,111,0.62)", "stroke-width": 1, "stroke-dasharray": "6 5" }),
-    svgEl("line", { x1: xToPx(0), y1: floorY, x2: xToPx(0), y2: zToPx(2 * R) - 8, stroke: "rgba(255,212,111,0.5)", "stroke-width": 1, "stroke-dasharray": "6 5" })
-  );
-
-  const centerPt = projectSidePt(domeCenter, 0, xToPx, zToPx);
-  const mountPt = projectSidePt(mountAxis, 0, xToPx, zToPx);
-  svg.append(
-    svgEl("line", { x1: centerPt.x, y1: centerPt.y, x2: mountPt.x, y2: mountPt.y, stroke: "rgba(122,215,255,0.72)", "stroke-width": 1.5, "stroke-dasharray": "5 4" }),
-    svgEl("circle", { cx: centerPt.x, cy: centerPt.y, r: 5, fill: "rgba(255,213,111,0.9)", stroke: "rgba(255,246,210,0.9)", "stroke-width": 1.5 }),
-    svgEl("circle", { cx: mountPt.x, cy: mountPt.y, r: 5.5, fill: "rgba(122,215,255,0.9)", stroke: "rgba(220,246,255,0.95)", "stroke-width": 1.5 })
-  );
-
-  renderSceneSide(svg, buildMountScopeScene3D(), 0, xToPx, zToPx, scale);
-  renderLaserSide(svg, 0, xToPx, zToPx);
-
-  const centerText = svgEl("text", { x: centerPt.x + 8, y: centerPt.y - 8, fill: "#ffd56f", "font-size": 11 });
-  centerText.textContent = "Dome center";
-  const mountText = svgEl("text", { x: mountPt.x + 8, y: mountPt.y + 14, fill: "#7ad7ff", "font-size": 11 });
-  mountText.textContent = `Mount axis: N ${mountScope.posNS.toFixed(0)} / E ${mountScope.posEW.toFixed(0)} / U ${mountScope.posUD.toFixed(0)} mm`;
-  svg.append(centerText, mountText);
 }
 
 function drawTopView() {
@@ -1469,6 +1703,20 @@ function makeMountNumberField(key, label, min, max, step) {
   `;
 }
 
+function makeMountSliderField(key, label, min, max, step) {
+  const mountScope = getMountScope();
+  const value = mountScope?.[key] ?? 0;
+  return `
+    <div class="field mount-slider-field">
+      <label for="mount-${key}">${label} (${Number(value).toFixed(0)} deg)</label>
+      <input id="mount-${key}" data-mount-field="${key}" type="number"
+        min="${min}" max="${max}" step="${step}" value="${value}">
+      <input id="mount-${key}-slider" data-mount-field="${key}" type="range"
+        min="${min}" max="${max}" step="${step}" value="${value}" aria-label="${label} slider">
+    </div>
+  `;
+}
+
 function makeMountSelectField(key, label, opts) {
   const mountScope = getMountScope();
   const value = mountScope?.[key];
@@ -1495,17 +1743,28 @@ function renderMountControls() {
     ${makeMountNumberField("posNS", "Position N/S (mm)", -5000, 5000, 10)}
     ${makeMountNumberField("posEW", "Position E/W (mm)", -5000, 5000, 10)}
     ${makeMountNumberField("posUD", "Position Up/Down (mm)", -5000, 5000, 10)}
-    ${makeMountNumberField("gemAxisLength", "GEM Axis Length (mm)", 0, 5000, 10)}
-    ${makeMountNumberField("lateralAxisLength", "DEC/CW Axis Length (mm)", 0, 5000, 10)}
+    ${isEq ? makeMountNumberField("counterweightShaftLengthMm", "Counterweight Shaft Length (mm)", 120, 3000, 10) : ""}
+    ${isEq ? makeMountNumberField("counterweightDiameterMm", "CW Diameter (mm)", 30, 800, 5) : ""}
     ${isEq ? makeMountSelectField("pierSideMode", "Meridian Flip", ["AUTO", "MANUAL"]) : ""}
     ${isEq ? makeMountSelectField("pierSide", "Pier Side", ["WEST", "EAST"]) : ""}
     ${isEq
-      ? makeMountNumberField("hourAngleDeg", "RA Axis / Hour Angle (deg)", -180, 180, 1)
+      ? makeMountSliderField("hourAngleDeg", "RA Axis / Hour Angle", -180, 180, 1)
       : makeMountNumberField("azimuth", "Azimuth (deg)", 0, 359, 1)}
     ${isEq
-      ? makeMountNumberField("declinationDeg", "DEC Axis / Declination (deg)", -90, 90, 1)
+      ? makeMountSliderField("declinationDeg", "DEC Axis / Declination", -90, 90, 1)
       : makeMountNumberField("elevation", "Elevation (deg)", 0, 89, 1)}
   `;
+
+  const syncMountFieldInputs = (field) => {
+    for (const control of host.querySelectorAll(`[data-mount-field="${field}"]`)) {
+      if (control.tagName === "SELECT") continue;
+      control.value = String(mountScope[field]);
+      const label = control.closest(".field")?.querySelector("label");
+      if (label && (field === "hourAngleDeg" || field === "declinationDeg")) {
+        label.textContent = `${field === "hourAngleDeg" ? "RA Axis / Hour Angle" : "DEC Axis / Declination"} (${Number(mountScope[field]).toFixed(0)} deg)`;
+      }
+    }
+  };
 
   for (const input of host.querySelectorAll("[data-mount-field]")) {
     input.addEventListener("input", (e) => {
@@ -1531,6 +1790,11 @@ function renderMountControls() {
       if (field === "mountType" || field === "pierSideMode") {
         renderMountControls();
         renderScopeCards();
+      } else {
+        syncMountFieldInputs(field);
+        if (["pierSide", "hourAngleDeg", "declinationDeg", "azimuth", "elevation"].includes(field)) {
+          renderScopeCards();
+        }
       }
       renderAll();
     });
@@ -1555,9 +1819,14 @@ function renderScopeCards() {
       ? `<span class="chip">Primary OTA</span>`
       : `<button class="remove-scope" data-id="${scope.id}" type="button">Remove</button>`;
     const mountControls = isMountOwner
-      ? ""
+      ? `
+        ${isEq ? makeNumberField(scope, "gemAxisLength", "GEM Axis Length (mm)", 0, 5000, 10) : ""}
+        ${isEq ? makeNumberField(scope, "lateralAxisLength", "Lateral Axis Length (mm)", 0, 5000, 10) : ""}
+      `
       : `
         ${makeSelectField(scope, "otaLayout", "OTA Layout", ["SIDE_BY_SIDE", "PIGGYBACK"])}
+        ${isEq ? makeNumberField(scope, "gemAxisLength", "GEM Axis Length (mm)", 0, 5000, 10) : ""}
+        ${isEq ? makeNumberField(scope, "lateralAxisLength", "Lateral Axis Length (mm)", 0, 5000, 10) : ""}
         ${makeNumberField(scope, "otaSideOffsetMm", "Side Offset (mm)", -2000, 2000, 10)}
         ${makeNumberField(scope, "otaPiggybackOffsetMm", "Piggyback Height (mm)", 0, 2000, 10)}
       `;
@@ -1597,6 +1866,7 @@ function renderScopeCards() {
           state.followScopeId = state.telescopes[0]?.id ?? 1;
         }
         renderGlobalControls();
+        renderDomeSimControls();
         renderScopeCards();
         renderAll();
       });
@@ -1623,6 +1893,7 @@ function renderScopeCards() {
         if (field === "mountType" || field === "pierSideMode") {
           renderScopeCards();
         }
+        if (field === "name") renderDomeSimControls();
         if (field === "azimuth") target.azimuth = normalizeHeading(target.azimuth);
         if (field === "elevation") target.elevation = clamp(target.elevation, 0, 89);
         if (field === "hourAngleDeg") target.hourAngleDeg = normalizeSignedDeg(target.hourAngleDeg);
@@ -1699,6 +1970,41 @@ function renderGlobalControls() {
   });
   sideRotSliderField.append(sideRotSliderLabel, sideRotSlider);
   host.appendChild(sideRotSliderField);
+}
+
+function renderDomeSimControls() {
+  const host = document.getElementById("dome-sim-controls");
+  if (!host) return;
+  host.innerHTML = "";
+
+  for (const control of domeSimControls) {
+    const field = document.createElement("div");
+    field.className = "field";
+
+    const label = document.createElement("label");
+    label.setAttribute("for", control.key);
+    label.textContent = control.label;
+
+    const input = document.createElement("input");
+    input.id = control.key;
+    input.type = "number";
+    input.min = String(control.min);
+    input.max = String(control.max);
+    input.step = String(control.step);
+    input.value = String(state[control.key]);
+
+    input.addEventListener("input", () => {
+      const parsed = Number(input.value);
+      if (!Number.isFinite(parsed)) return;
+      state[control.key] = clamp(parsed, control.min, control.max);
+      if (control.key === "domeAzimuthDeg") state[control.key] = normalizeHeading(state[control.key]);
+      renderAll();
+    });
+
+    if (control.key === "domeAzimuthDeg") input.disabled = state.domeFollowsTelescope;
+    field.append(label, input);
+    host.appendChild(field);
+  }
 
   const followToggleField = document.createElement("div");
   followToggleField.className = "field";
@@ -1711,7 +2017,7 @@ function renderGlobalControls() {
   followInput.checked = state.domeFollowsTelescope;
   followInput.addEventListener("change", () => {
     state.domeFollowsTelescope = followInput.checked;
-    renderGlobalControls();
+    renderDomeSimControls();
     renderAll();
   });
   followToggleField.append(followLabel, followInput);
@@ -1802,14 +2108,37 @@ function wireButtons() {
     state.followScopeId = state.followScopeId || nextScopeId;
     nextScopeId += 1;
     renderGlobalControls();
+    renderDomeSimControls();
     renderScopeCards();
     renderAll();
   });
+
+  const tabs = Array.from(document.querySelectorAll("[data-view-tab]"));
+  const panels = Array.from(document.querySelectorAll("[data-view-panel]"));
+
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => {
+      const targetView = tab.getAttribute("data-view-tab");
+
+      for (const item of tabs) {
+        const isActive = item === tab;
+        item.classList.toggle("active", isActive);
+        item.setAttribute("aria-selected", String(isActive));
+      }
+
+      for (const panel of panels) {
+        const isActive = panel.getAttribute("data-view-panel") === targetView;
+        panel.classList.toggle("active", isActive);
+        panel.hidden = !isActive;
+      }
+    });
+  }
 }
 
 function init() {
   runtime.currentDomeAzimuthDeg = getDomeTargetAzimuthDeg();
   renderGlobalControls();
+  renderDomeSimControls();
   renderMountControls();
   wireButtons();
   renderScopeCards();

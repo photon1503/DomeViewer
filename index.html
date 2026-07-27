@@ -27,6 +27,9 @@
         <h2>Dome Settings</h2>
         <div class="control-grid" id="global-controls"></div>
 
+        <h2>Dome Sim</h2>
+        <div class="control-grid" id="dome-sim-controls"></div>
+
         <h2>Mount</h2>
         <div class="control-grid" id="mount-controls"></div> 
 
@@ -36,7 +39,7 @@
         </div>
         <div id="telescopes-container" class="telescopes-container"></div>
       </section>
-   
+
       <section class="viewer-panel">
         <div class="view-tabs" role="tablist" aria-label="Viewer modes">
           <button class="view-tab active" id="tab-dome" type="button" role="tab" aria-selected="true" aria-controls="panel-dome" data-view-tab="dome">Dome Views</button>
@@ -45,28 +48,31 @@
 
         <div class="view-tab-panel active" id="panel-dome" role="tabpanel" aria-labelledby="tab-dome" data-view-panel="dome">
           <div class="views-row">
-          <div class="view-card">
-            <div class="view-title-row">
-              <h3>Top View (Dome Plan)</h3>
-              <span class="legend">N up, E right</span>
+            <div class="view-card">
+              <div class="view-title-row">
+                <h3>Top View (Dome Plan)</h3>
+                <span class="legend">N up, E right</span>
+              </div>
+              <svg id="top-view" viewBox="0 0 420 420" role="img" aria-label="Top view of dome and telescopes"></svg>
             </div>
-            <svg id="top-view" viewBox="0 0 420 420" role="img" aria-label="Top view of dome and telescopes"></svg>
-          </div>
 
+            <div class="view-card">
+              <div class="view-title-row">
+                <h3>Side View (Dome Elevation)</h3>
+                <span class="legend">Cross section through center</span>
+              </div>
+              <svg id="side-view" viewBox="0 0 640 420" role="img" aria-label="Side view of dome and telescopes"></svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="view-tab-panel" id="panel-mount" role="tabpanel" aria-labelledby="tab-mount" data-view-panel="mount" hidden>
           <div class="view-card">
             <div class="view-title-row">
               <h3>Mount Geometry</h3>
               <span class="legend">NINA reference</span>
             </div>
             <svg id="mount-view" viewBox="0 0 640 420" role="img" aria-label="Mount and OTA geometry reference view"></svg>
-          </div>
-
-          <div class="view-card">
-            <div class="view-title-row">
-              <h3>Side View (Dome Elevation)</h3>
-              <span class="legend">Cross section through center</span>
-            </div>
-            <svg id="side-view" viewBox="0 0 640 420" role="img" aria-label="Side view of dome and telescopes"></svg>
           </div>
         </div>
 

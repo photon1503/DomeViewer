@@ -259,9 +259,29 @@ button {
   gap: 1rem;
 }
 
+.view-tabs {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.view-tab {
+  cursor: pointer;
+}
+
+.view-tab.active {
+  border-color: rgba(90, 240, 170, 0.65);
+  color: #a7f8c8;
+  background: rgba(36, 74, 58, 0.72);
+}
+
+.view-tab-panel[hidden] {
+  display: none;
+}
+
 .views-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(360px, 1fr));
+  grid-template-columns: repeat(2, minmax(360px, 1fr));
   gap: 1rem;
   overflow-x: auto;
 }
