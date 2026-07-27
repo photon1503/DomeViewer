@@ -41,6 +41,11 @@ const runtime = {
   trackingLastPierSide: null,
   trackingOriginalPierSideMode: null,
   trackingOriginalPierSide: null,
+  trackingFlipStartTsMs: 0,
+  trackingFlipDurationMs: 1800,
+  trackingFlipProgress: 0,
+  trackingFlipFromPierSide: null,
+  trackingFlipToPierSide: null,
   mountThreeView: null,
   mountThreeInitPromise: null,
   mountViewYawDeg: -36,
@@ -237,6 +242,10 @@ function stopTrackingTelescope(resetId = null) {
   runtime.trackingLastPierSide = null;
   runtime.trackingOriginalPierSideMode = null;
   runtime.trackingOriginalPierSide = null;
+  runtime.trackingFlipStartTsMs = 0;
+  runtime.trackingFlipProgress = 0;
+  runtime.trackingFlipFromPierSide = null;
+  runtime.trackingFlipToPierSide = null;
   if (shouldRenderCards) {
     renderScopeCards();
     renderAll();
@@ -258,20 +267,33 @@ function trackTelescopeFrame(tsMs) {
   );
   const nextPierSide = nextHourAngleDeg < 0 ? "WEST" : "EAST";
 
-  if (runtime.trackingPauseUntilMs > tsMs) {
-    scope.hourAngleDeg = 0;
-  } else if (runtime.trackingPauseUntilMs > 0) {
-    runtime.trackingPauseUntilMs = 0;
-    runtime.trackingLastPierSide = nextPierSide;
-    scope.pierSide = nextPierSide;
-    scope.pierSideMode = "AUTO";
+  if (runtime.trackingFlipStartTsMs > 0) {
+    const flipProgress = clamp((tsMs - runtime.trackingFlipStartTsMs) / runtime.trackingFlipDurationMs, 0, 1);
+    runtime.trackingFlipProgress = flipProgress;
     scope.hourAngleDeg = nextHourAngleDeg;
-  } else if (runtime.trackingLastPierSide !== null && nextPierSide !== runtime.trackingLastPierSide) {
-    runtime.trackingPauseUntilMs = tsMs + 500;
-    scope.hourAngleDeg = 0;
     scope.pierSideMode = "MANUAL";
-    scope.pierSide = runtime.trackingLastPierSide;
+    scope.pierSide = runtime.trackingFlipFromPierSide ?? runtime.trackingLastPierSide ?? scope.pierSide;
+    if (flipProgress >= 1) {
+      runtime.trackingFlipStartTsMs = 0;
+      runtime.trackingFlipProgress = 0;
+      runtime.trackingLastPierSide = runtime.trackingFlipToPierSide ?? nextPierSide;
+      scope.pierSide = runtime.trackingLastPierSide;
+      scope.pierSideMode = "AUTO";
+      scope.hourAngleDeg = nextHourAngleDeg;
+      runtime.trackingFlipFromPierSide = null;
+      runtime.trackingFlipToPierSide = null;
+    }
+  } else if (runtime.trackingLastPierSide !== null && nextPierSide !== runtime.trackingLastPierSide) {
+    runtime.trackingFlipStartTsMs = tsMs;
+    runtime.trackingFlipProgress = 0;
+    runtime.trackingFlipFromPierSide = runtime.trackingLastPierSide;
+    runtime.trackingFlipToPierSide = nextPierSide;
+    runtime.trackingPauseUntilMs = 0;
+    scope.hourAngleDeg = nextHourAngleDeg;
+    scope.pierSideMode = "MANUAL";
+    scope.pierSide = runtime.trackingFlipFromPierSide;
   } else {
+    runtime.trackingFlipProgress = 0;
     scope.hourAngleDeg = nextHourAngleDeg;
   }
 
@@ -309,6 +331,10 @@ function startTrackingTelescope(scopeId) {
   runtime.trackingStartHaDeg = -hourLimitDeg;
   runtime.trackingEndHaDeg = hourLimitDeg;
   runtime.trackingPauseUntilMs = 0;
+  runtime.trackingFlipStartTsMs = 0;
+  runtime.trackingFlipProgress = 0;
+  runtime.trackingFlipFromPierSide = null;
+  runtime.trackingFlipToPierSide = null;
   runtime.trackingOriginalPierSideMode = scope.pierSideMode;
   runtime.trackingOriginalPierSide = scope.pierSide;
   runtime.trackingLastPierSide = "WEST";
@@ -1487,7 +1513,11 @@ function getMountViewConfig() {
       counterweightShaftLengthMm: Number(mount.counterweightShaftLengthMm) || 820,
       counterweightDiameterMm: Number(mount.counterweightDiameterMm) || 170,
       pierSideMode: mount.pierSideMode,
-      pierSide: mount.pierSide
+      pierSide: mount.pierSide,
+      trackingFlipProgress: runtime.trackingFlipProgress || 0,
+      trackingFlipDirection: runtime.trackingFlipFromPierSide === "EAST" && runtime.trackingFlipToPierSide === "WEST"
+        ? -1
+        : 1
     },
     scopes: state.telescopes.map((scope) => ({
       id: scope.id,

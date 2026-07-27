@@ -189,9 +189,20 @@ function buildEqScene(root, config, importedAsset) {
   haGroup.rotation.y = -hourAngleRad;
   headGroup.add(haGroup);
 
+  const flipGroup = new THREE.Group();
+  const rawFlipProgress = mount.trackingFlipProgress || 0;
+  const flipProgress = rawFlipProgress <= 0
+    ? 0
+    : rawFlipProgress >= 1
+      ? 1
+      : 0.5 - 0.5 * Math.cos(rawFlipProgress * Math.PI);
+  const flipDirection = mount.trackingFlipDirection || 1;
+  flipGroup.rotation.y = Math.PI * flipProgress * flipDirection;
+  haGroup.add(flipGroup);
+
   const decRotGroup = new THREE.Group();
   decRotGroup.rotation.x = -declinationRad;
-  haGroup.add(decRotGroup);
+  flipGroup.add(decRotGroup);
 
   const pierMat = createPhysicalMaterial("#d9e1ec", 0.2, 0.18);
   const darkMat = createPhysicalMaterial("#34373f", 0.58, 0.42);
