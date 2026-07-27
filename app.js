@@ -94,6 +94,7 @@ function createScope(idx) {
     tubeLengthMm: idx === 1 ? 1080 : 760,
     hourAngleDeg: -12,
     declinationDeg: 68,
+    declinationTurnDeg: 158,
     pierSideMode: "AUTO",
     pierSide: "WEST",
     azimuth: 30,
@@ -119,6 +120,40 @@ function normalizeSignedDeg(deg) {
   let angle = normalizeHeading(deg);
   if (angle > 180) angle -= 360;
   return angle;
+}
+
+function normalizeTurnDeg(deg) {
+  let angle = deg % 360;
+  if (angle < 0) angle += 360;
+  return angle;
+}
+
+function turnDegToDeclinationDeg(turnDeg) {
+  const turn = normalizeTurnDeg(turnDeg);
+  return turn <= 180 ? turn - 90 : 270 - turn;
+}
+
+function declinationDegToTurnCandidates(decDeg) {
+  const dec = clamp(decDeg, -90, 90);
+  return [dec + 90, 270 - dec];
+}
+
+function circularDistanceDeg(a, b) {
+  const delta = Math.abs(a - b) % 360;
+  return Math.min(delta, 360 - delta);
+}
+
+function getMountDeclinationTurnDeg(mountScope) {
+  const storedTurn = Number(mountScope?.declinationTurnDeg);
+  if (Number.isFinite(storedTurn)) return normalizeTurnDeg(storedTurn);
+  const dec = clamp(Number(mountScope?.declinationDeg) || 0, -90, 90);
+  return dec + 90;
+}
+
+function syncMountDeclinationFromTurn(mountScope) {
+  const turn = getMountDeclinationTurnDeg(mountScope);
+  mountScope.declinationTurnDeg = turn;
+  mountScope.declinationDeg = turnDegToDeclinationDeg(turn);
 }
 
 function signedDeltaDeg(a, b) {
@@ -1508,6 +1543,7 @@ function getMountViewConfig() {
       posUD: Number(mount.posUD) || 0,
       hourAngleDeg: Number(mount.hourAngleDeg) || 0,
       declinationDeg: Number(mount.declinationDeg) || 0,
+      declinationTurnDeg: getMountDeclinationTurnDeg(mount),
       azimuth: Number(mount.azimuth) || 0,
       elevation: Number(mount.elevation) || 0,
       counterweightShaftLengthMm: Number(mount.counterweightShaftLengthMm) || 820,
@@ -1863,6 +1899,22 @@ function makeMountSliderField(key, label, min, max, step) {
   `;
 }
 
+function makeMountDeclinationTurnField() {
+  const mountScope = getMountScope();
+  const turnDeg = getMountDeclinationTurnDeg(mountScope);
+  const decDeg = turnDegToDeclinationDeg(turnDeg);
+  const sliderDeg = turnDeg - 90;
+  return `
+    <div class="field mount-slider-field">
+      <label for="mount-declinationDeg">DEC Axis / Declination (${Number(decDeg).toFixed(0)} deg)</label>
+      <input id="mount-declinationDeg" data-mount-field="declinationDeg" type="number"
+        min="-90" max="90" step="1" value="${decDeg}">
+      <input id="mount-declinationTurnDeg-slider" data-mount-field="declinationTurnDeg" type="range"
+        min="-90" max="270" step="1" value="${sliderDeg}" aria-label="DEC Axis full turn slider">
+    </div>
+  `;
+}
+
 function makeMountSelectField(key, label, opts) {
   const mountScope = getMountScope();
   const value = mountScope?.[key];
@@ -1883,6 +1935,8 @@ function renderMountControls() {
   const mountScope = getMountScope();
   if (!host || !mountScope) return;
 
+  syncMountDeclinationFromTurn(mountScope);
+
   const isEq = mountScope.mountType === "EQ";
   host.innerHTML = `
     ${makeMountSelectField("mountType", "Mount Type", ["EQ", "AZ"])}
@@ -1897,17 +1951,23 @@ function renderMountControls() {
       ? makeMountSliderField("hourAngleDeg", "RA Axis / Hour Angle", -180, 180, 1)
       : makeMountNumberField("azimuth", "Azimuth (deg)", 0, 359, 1)}
     ${isEq
-      ? makeMountSliderField("declinationDeg", "DEC Axis / Declination", -90, 90, 1)
+      ? makeMountDeclinationTurnField()
       : makeMountNumberField("elevation", "Elevation (deg)", 0, 89, 1)}
   `;
 
   const syncMountFieldInputs = (field) => {
     for (const control of host.querySelectorAll(`[data-mount-field="${field}"]`)) {
       if (control.tagName === "SELECT") continue;
-      control.value = String(mountScope[field]);
+      if (field === "declinationTurnDeg") {
+        control.value = String(getMountDeclinationTurnDeg(mountScope) - 90);
+      } else {
+        control.value = String(mountScope[field]);
+      }
       const label = control.closest(".field")?.querySelector("label");
-      if (label && (field === "hourAngleDeg" || field === "declinationDeg")) {
-        label.textContent = `${field === "hourAngleDeg" ? "RA Axis / Hour Angle" : "DEC Axis / Declination"} (${Number(mountScope[field]).toFixed(0)} deg)`;
+      if (label && (field === "hourAngleDeg" || field === "declinationDeg" || field === "declinationTurnDeg")) {
+        const isHaField = field === "hourAngleDeg";
+        const valueDeg = isHaField ? Number(mountScope.hourAngleDeg) : Number(mountScope.declinationDeg);
+        label.textContent = `${isHaField ? "RA Axis / Hour Angle" : "DEC Axis / Declination"} (${valueDeg.toFixed(0)} deg)`;
       }
     }
   };
@@ -1919,6 +1979,11 @@ function renderMountControls() {
 
       if (field === "mountType" || field === "pierSideMode" || field === "pierSide") {
         mountScope[field] = e.target.value;
+      } else if (field === "declinationTurnDeg") {
+        const parsed = Number(e.target.value);
+        if (!Number.isFinite(parsed)) return;
+        mountScope.declinationTurnDeg = normalizeTurnDeg(parsed + 90);
+        syncMountDeclinationFromTurn(mountScope);
       } else {
         const parsed = Number(e.target.value);
         if (!Number.isFinite(parsed)) return;
@@ -1931,14 +1996,24 @@ function renderMountControls() {
       if (field === "azimuth") mountScope.azimuth = normalizeHeading(mountScope.azimuth);
       if (field === "elevation") mountScope.elevation = clamp(mountScope.elevation, 0, 89);
       if (field === "hourAngleDeg") mountScope.hourAngleDeg = normalizeSignedDeg(mountScope.hourAngleDeg);
-      if (field === "declinationDeg") mountScope.declinationDeg = clamp(mountScope.declinationDeg, -90, 90);
+      if (field === "declinationDeg") {
+        const previousTurn = getMountDeclinationTurnDeg(mountScope);
+        mountScope.declinationDeg = clamp(mountScope.declinationDeg, -90, 90);
+        const turnCandidates = declinationDegToTurnCandidates(mountScope.declinationDeg);
+        const chosenTurn = circularDistanceDeg(turnCandidates[0], previousTurn) <= circularDistanceDeg(turnCandidates[1], previousTurn)
+          ? turnCandidates[0]
+          : turnCandidates[1];
+        mountScope.declinationTurnDeg = normalizeTurnDeg(chosenTurn);
+      }
 
       if (field === "mountType" || field === "pierSideMode") {
         renderMountControls();
         renderScopeCards();
       } else {
         syncMountFieldInputs(field);
-        if (["pierSide", "hourAngleDeg", "declinationDeg", "azimuth", "elevation"].includes(field)) {
+        if (field === "declinationTurnDeg") syncMountFieldInputs("declinationDeg");
+        if (field === "declinationDeg") syncMountFieldInputs("declinationTurnDeg");
+        if (["pierSide", "hourAngleDeg", "declinationDeg", "declinationTurnDeg", "azimuth", "elevation"].includes(field)) {
           renderScopeCards();
         }
       }

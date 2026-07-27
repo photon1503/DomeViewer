@@ -22,6 +22,12 @@ function normalizeSignedDeg(deg) {
   return angle;
 }
 
+function normalizeTurnDeg(deg) {
+  let angle = deg % 360;
+  if (angle < 0) angle += 360;
+  return angle;
+}
+
 function v3(x, y, z) {
   return new THREE.Vector3(x, y, z);
 }
@@ -177,7 +183,10 @@ function buildEqScene(root, config, importedAsset) {
   const raUnit = v3Norm(v3(0, hemiSign * Math.cos(latAbs), Math.sin(latAbs)));
   const raQuat = new THREE.Quaternion().setFromUnitVectors(LOCAL_RA_AXIS, raUnit.clone().normalize());
   const hourAngleRad = degToRad(normalizeSignedDeg(mount.hourAngleDeg ?? 0));
-  const declinationRad = degToRad(clamp(mount.declinationDeg ?? 0, -90, 90));
+  const decTurnDeg = Number.isFinite(Number(mount.declinationTurnDeg))
+    ? normalizeTurnDeg(Number(mount.declinationTurnDeg)) - 90
+    : clamp(mount.declinationDeg ?? 0, -90, 90);
+  const decMechanicalRad = degToRad(decTurnDeg);
   const pierSideSign = getEqPierSide(mount) === "EAST" ? 1 : -1;
 
   const headGroup = new THREE.Group();
@@ -201,7 +210,7 @@ function buildEqScene(root, config, importedAsset) {
   haGroup.add(flipGroup);
 
   const decRotGroup = new THREE.Group();
-  decRotGroup.rotation.x = -declinationRad;
+  decRotGroup.rotation.x = -decMechanicalRad;
   flipGroup.add(decRotGroup);
 
   const pierMat = createPhysicalMaterial("#d9e1ec", 0.2, 0.18);
