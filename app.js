@@ -20,6 +20,8 @@ const state = {
   domeSettleTimeSec: 0.6,
   sideViewRotationDeg: 0,
   showLaserLine: true,
+  mountViewMode: "PROCEDURAL",
+  mountModelUrl: "",
   telescopes: [createScope(1)]
 };
 
@@ -38,7 +40,14 @@ const runtime = {
   trackingPauseUntilMs: 0,
   trackingLastPierSide: null,
   trackingOriginalPierSideMode: null,
-  trackingOriginalPierSide: null
+  trackingOriginalPierSide: null,
+  mountThreeView: null,
+  mountThreeInitPromise: null,
+  mountViewYawDeg: -36,
+  mountViewPitchDeg: 18,
+  mountViewDragging: false,
+  mountViewLastX: 0,
+  mountViewLastY: 0
 };
 
 let nextScopeId = 2;
@@ -64,7 +73,7 @@ const domeSimControls = [
 function createScope(idx) {
   return {
     id: idx,
-    name: `Telescope ${idx}`,
+    name: idx === 1 ? "RC Truss OTA" : `Telescope ${idx}`,
     otaLayout: idx === 1 ? "PRIMARY" : "SIDE_BY_SIDE",
     otaSideOffsetMm: idx === 1 ? 0 : 320,
     otaPiggybackOffsetMm: idx === 1 ? 0 : 180,
@@ -72,14 +81,14 @@ function createScope(idx) {
     posNS: 80,
     posEW: 0,
     posUD: 272,
-    gemAxisLength: 435,
-    lateralAxisLength: 230,
+    gemAxisLength: idx === 1 ? 310 : 435,
+    lateralAxisLength: idx === 1 ? 0 : 230,
     counterweightShaftLengthMm: 820,
     counterweightDiameterMm: 170,
-    telescopeDiameterMm: 120,
-    tubeLengthMm: 760,
-    hourAngleDeg: 0,
-    declinationDeg: 25,
+    telescopeDiameterMm: idx === 1 ? 320 : 120,
+    tubeLengthMm: idx === 1 ? 1080 : 760,
+    hourAngleDeg: -12,
+    declinationDeg: 68,
     pierSideMode: "AUTO",
     pierSide: "WEST",
     azimuth: 30,
@@ -583,6 +592,16 @@ function v3Norm(v) {
   return { x: v.x / n, y: v.y / n, z: v.z / n };
 }
 
+function v3RotateAroundAxis(v, axis, angleRad) {
+  const k = v3Norm(axis);
+  const cosA = Math.cos(angleRad);
+  const sinA = Math.sin(angleRad);
+  return v3Add(
+    v3Add(v3Scale(v, cosA), v3Scale(v3Cross(k, v), sinA)),
+    v3Scale(k, v3Dot(k, v) * (1 - cosA))
+  );
+}
+
 function domeRadiusAtHeight(zMm, radiusMm) {
   if (zMm <= radiusMm) return radiusMm;
   const dz = zMm - radiusMm;
@@ -659,32 +678,39 @@ function getEqMountGeometry(scope) {
   const up = v3(0, 0, 1);
   const mountScope = getMountScope() ?? scope;
   const mount = getMountAxisPoint(mountScope);
-  const pointing = getScopePointing(scope);
-  const optical = pointing.optical;
   const latAbs = degToRad(clamp(Math.abs(state.latitudeDeg), 0, 89.5));
   const hemiSign = state.latitudeDeg >= 0 ? 1 : -1;
   const raUnit = v3Norm(v3(0, hemiSign * Math.cos(latAbs), Math.sin(latAbs)));
-  let decUnit = v3Norm(v3Cross(raUnit, optical));
-  if (Math.hypot(decUnit.x, decUnit.y, decUnit.z) < 1e-6) decUnit = v3Norm(v3Cross(raUnit, up));
-  if (Math.hypot(decUnit.x, decUnit.y, decUnit.z) < 1e-6) decUnit = v3(1, 0, 0);
+  const hourAngle = degToRad(normalizeSignedDeg(mountScope.hourAngleDeg ?? 0));
+  const declination = degToRad(clamp(mountScope.declinationDeg ?? 0, -90, 90));
+  const decUnit = v3Norm(v3RotateAroundAxis(v3(1, 0, 0), raUnit, -hourAngle));
+  const equatorOptical = v3Norm(v3Cross(decUnit, raUnit));
+  const optical = v3Norm(v3Add(v3Scale(raUnit, Math.sin(declination)), v3Scale(equatorOptical, Math.cos(declination))));
 
   const pierSideSign = getEqPierSide(scope) === "EAST" ? 1 : -1;
-  const pierTop = v3Add(mount, v3(0, 0, -90));
-  const wedgeBack = v3Add(mount, v3Scale(raUnit, -230));
-  const wedgeFront = v3Add(mount, v3Scale(raUnit, -70));
-  const raShoulder = v3Add(mount, v3Scale(raUnit, -170));
+  const pierTop = v3Add(mount, v3(0, 0, -72));
+  const raBack = v3Add(mount, v3Scale(raUnit, -258));
+  const raFront = v3Add(mount, v3Scale(raUnit, 36));
+  const wedgeBack = v3Add(mount, v3Scale(raUnit, -182));
+  const wedgeFront = v3Add(mount, v3Scale(raUnit, -92));
+  const raShoulder = v3Add(mount, v3Scale(raUnit, -146));
   const raHead = mount;
   const gemAxisLength = Math.max(70, Number(scope.gemAxisLength) || 435);
   const lateralAxisLength = Number(scope.lateralAxisLength) || 0;
-  const telescopeOffset = gemAxisLength;
   const sideDir = v3Scale(decUnit, pierSideSign);
-  const baseSaddle = v3Add(raHead, v3Scale(sideDir, telescopeOffset));
-  const otaOffset = v3Add(getOtaOffset(scope, optical, sideDir), v3Scale(sideDir, lateralAxisLength));
-  const saddle = v3Add(baseSaddle, otaOffset);
+  const decHousingHalfLen = Math.min(185, Math.max(120, gemAxisLength * 0.22));
+  const decScopeEnd = v3Add(raHead, v3Scale(sideDir, decHousingHalfLen));
+  const decCounterEnd = v3Add(raHead, v3Scale(sideDir, -decHousingHalfLen));
   const tubeLen = Math.max(120, Number(scope.tubeLengthMm) || 760);
   const tubeRadius = Math.max(24, (Number(scope.telescopeDiameterMm) || 120) * 0.5);
-  let saddleNormal = v3Norm(v3Add(up, v3Scale(optical, -v3Dot(up, optical))));
+  let saddleNormal = v3Norm(v3Cross(optical, sideDir));
+  if (Math.hypot(saddleNormal.x, saddleNormal.y, saddleNormal.z) < 1e-6) saddleNormal = v3Norm(v3Add(up, v3Scale(sideDir, -v3Dot(up, sideDir))));
   if (Math.hypot(saddleNormal.x, saddleNormal.y, saddleNormal.z) < 1e-6) saddleNormal = up;
+  if (v3Dot(saddleNormal, up) < 0) saddleNormal = v3Scale(saddleNormal, -1);
+  const saddleLift = Math.min(95, Math.max(28, gemAxisLength * 0.14));
+  const lateralOffset = scope.otaLayout === "SIDE_BY_SIDE" ? lateralAxisLength : 0;
+  const otaOffset = v3Add(getOtaOffset(scope, optical, sideDir), v3Scale(sideDir, lateralOffset));
+  const saddle = v3Add(v3Add(decScopeEnd, v3Scale(saddleNormal, saddleLift)), otaOffset);
   const tubeCenterAtSaddle = v3Add(saddle, v3Scale(saddleNormal, tubeRadius + Math.max(14, tubeRadius * 0.22)));
   const tubeBack = v3Add(tubeCenterAtSaddle, v3Scale(optical, -tubeLen / 3));
   const tubeFront = v3Add(tubeCenterAtSaddle, v3Scale(optical, tubeLen * (2 / 3)));
@@ -702,19 +728,25 @@ function getEqMountGeometry(scope) {
   const cwWeightOuterFront = v3Add(cwWeightOuter, v3Scale(sideDir, -cwThickness * 0.5));
   const cwWeightInnerBack = v3Add(cwWeightInner, v3Scale(sideDir, cwThickness * 0.5));
   const cwWeightInnerFront = v3Add(cwWeightInner, v3Scale(sideDir, -cwThickness * 0.5));
-  const decA = raHead;
-  const decB = saddle;
+  const decA = decCounterEnd;
+  const decB = decScopeEnd;
 
   return {
     mount,
     optical,
+    raUnit,
+    decUnit,
     pierTop,
     wedgeBack,
     wedgeFront,
+    raBack,
+    raFront,
     raShoulder,
     raHead,
     decA,
     decB,
+    decScopeEnd,
+    decCounterEnd,
     saddle,
     saddleBack,
     saddlePlateBack,
@@ -784,7 +816,8 @@ function buildMountScopeScene3D() {
         diameterMm: 190,
         fill: "rgba(126,145,176,0.55)",
         stroke: "rgba(230,240,255,0.7)",
-        swMm: 10
+        swMm: 10,
+        isPierColumn: true
       });
     }
 
@@ -792,15 +825,16 @@ function buildMountScopeScene3D() {
       const geometry = getEqMountGeometry(scope);
 
       if (isMountOwner) {
-        rods.push({ a: mount, b: geometry.pierTop, diameterMm: 210, fill: "rgba(126,145,176,0.58)", stroke: "rgba(230,240,255,0.76)", swMm: 10 });
-        rods.push({ a: geometry.wedgeBack, b: geometry.pierTop, diameterMm: 110, fill: "rgba(166,184,211,0.52)", stroke: "rgba(235,245,255,0.78)", swMm: 8 });
-        rods.push({ a: geometry.pierTop, b: geometry.wedgeFront, diameterMm: 124, fill: "rgba(166,184,211,0.52)", stroke: "rgba(235,245,255,0.78)", swMm: 8 });
-        rods.push({ a: geometry.wedgeFront, b: geometry.raShoulder, diameterMm: 118, fill: "rgba(166,184,211,0.52)", stroke: "rgba(235,245,255,0.78)", swMm: 8 });
-        rods.push({ a: geometry.raShoulder, b: geometry.raHead, diameterMm: 210, fill: "rgba(92,172,212,0.56)", stroke: color, swMm: 9, isRaHousing: true });
-        rods.push({ a: geometry.decA, b: geometry.decB, diameterMm: 122, fill: "rgba(184,204,228,0.56)", stroke: "rgba(235,245,255,0.95)", swMm: 8, isDecHousing: true });
+        rods.push({ a: mount, b: geometry.pierTop, diameterMm: 210, fill: "rgba(138,148,164,0.74)", stroke: "rgba(232,238,246,0.82)", swMm: 10 });
+        rods.push({ a: geometry.wedgeBack, b: geometry.pierTop, diameterMm: 82, fill: "rgba(54,57,64,0.92)", stroke: "rgba(166,171,180,0.86)", swMm: 7 });
+        rods.push({ a: geometry.pierTop, b: geometry.wedgeFront, diameterMm: 92, fill: "rgba(54,57,64,0.92)", stroke: "rgba(166,171,180,0.86)", swMm: 7 });
+        rods.push({ a: geometry.wedgeFront, b: geometry.raShoulder, diameterMm: 76, fill: "rgba(54,57,64,0.92)", stroke: "rgba(166,171,180,0.86)", swMm: 7 });
+        rods.push({ a: geometry.raBack, b: geometry.raFront, diameterMm: 198, fill: "rgba(58,61,68,0.96)", stroke: "rgba(170,176,186,0.92)", swMm: 9, isRaHousing: true });
+        rods.push({ a: geometry.decA, b: geometry.decB, diameterMm: 176, fill: "rgba(66,70,77,0.96)", stroke: "rgba(176,182,191,0.92)", swMm: 9, isDecHousing: true });
+        rods.push({ a: geometry.decScopeEnd, b: geometry.saddleBack, diameterMm: 116, fill: "rgba(46,49,56,0.96)", stroke: "rgba(176,182,191,0.92)", swMm: 7, isSaddleSupport: true });
       }
       if (!isMountOwner) {
-        rods.push({ a: geometry.raHead, b: geometry.saddleBack, diameterMm: 106, fill: "rgba(196,214,236,0.54)", stroke: "rgba(238,246,255,0.96)", swMm: 7 });
+        rods.push({ a: geometry.decScopeEnd, b: geometry.saddleBack, diameterMm: 82, fill: "rgba(196,214,236,0.54)", stroke: "rgba(238,246,255,0.96)", swMm: 7 });
       }
       rods.push({
         a: geometry.tubeBack,
@@ -815,28 +849,27 @@ function buildMountScopeScene3D() {
         a: geometry.saddlePlateBack,
         b: geometry.saddlePlateFront,
         diameterMm: Math.max(70, scope.telescopeDiameterMm * 0.7),
-        fill: "rgba(220,232,247,0.66)",
-        stroke: "rgba(245,250,255,0.96)",
+        fill: "rgba(36,39,46,0.98)",
+        stroke: "rgba(186,192,201,0.95)",
         swMm: 7,
         isSaddlePlate: true
       });
       circles.push({ c: geometry.tubeFront, rMm: Math.max(20, scope.telescopeDiameterMm * 0.5), stroke: color, fill: "rgba(225,235,250,0.26)", swMm: 8, isAperture: true });
 
       if (isMountOwner) {
-        rods.push({ a: geometry.raHead, b: geometry.cwEnd, diameterMm: 28, fill: "rgba(225,236,249,0.58)", stroke: "rgba(244,250,255,0.96)", swMm: 5, isCounterweightBar: true });
-        circles.push({ c: mount, rMm: 70, stroke: "rgba(230,240,255,0.85)", fill: "rgba(114,137,175,0.32)", swMm: 14 });
-        circles.push({ c: geometry.pierTop, rMm: 54, stroke: "rgba(230,240,255,0.88)", fill: "rgba(124,149,186,0.36)", swMm: 10 });
-        circles.push({ c: geometry.raShoulder, rMm: 48, stroke: "rgba(227,240,255,0.92)", fill: "rgba(162,188,223,0.48)", swMm: 8 });
-        circles.push({ c: geometry.raHead, rMm: 58, stroke: "rgba(245,250,255,0.96)", fill: "rgba(74,95,122,0.16)", swMm: 4 });
-        circles.push({ c: geometry.raHead, rMm: 47, stroke: "rgba(238,246,255,0.94)", fill: "rgba(122,146,182,0.16)", swMm: 6 });
-        circles.push({ c: geometry.raHead, rMm: 36, stroke: "rgba(235,245,255,0.95)", fill: "rgba(180,202,231,0.46)", swMm: 7 });
+        rods.push({ a: geometry.raHead, b: geometry.cwEnd, diameterMm: 34, fill: "rgba(234,238,244,0.88)", stroke: "rgba(245,248,252,0.98)", swMm: 5, isCounterweightBar: true });
+        circles.push({ c: mount, rMm: 76, stroke: "rgba(224,230,238,0.84)", fill: "rgba(70,73,80,0.58)", swMm: 14 });
+        circles.push({ c: geometry.pierTop, rMm: 58, stroke: "rgba(224,230,238,0.88)", fill: "rgba(210,92,42,0.78)", swMm: 10 });
+        circles.push({ c: geometry.raShoulder, rMm: 52, stroke: "rgba(224,230,238,0.9)", fill: "rgba(58,61,68,0.7)", swMm: 8 });
+        circles.push({ c: geometry.raHead, rMm: 68, stroke: "rgba(224,230,238,0.92)", fill: "rgba(210,92,42,0.88)", swMm: 5 });
+        circles.push({ c: geometry.raHead, rMm: 56, stroke: "rgba(236,240,246,0.94)", fill: "rgba(56,60,67,0.94)", swMm: 6 });
+        circles.push({ c: geometry.raHead, rMm: 40, stroke: "rgba(236,240,246,0.92)", fill: "rgba(88,93,102,0.92)", swMm: 7 });
         circles.push({ c: geometry.cwWeightOuter, depthBack: geometry.cwWeightOuterBack, depthFront: geometry.cwWeightOuterFront, rMm: geometry.cwDiameter * 0.5, stroke: "rgba(240,248,255,0.98)", fill: "rgba(217,229,248,0.82)", swMm: 9, isCounterweight: true });
         circles.push({ c: geometry.cwWeightInner, depthBack: geometry.cwWeightInnerBack, depthFront: geometry.cwWeightInnerFront, rMm: geometry.cwDiameter * 0.5, stroke: "rgba(240,248,255,0.95)", fill: "rgba(217,229,248,0.76)", swMm: 8, isCounterweight: true });
-        labels.push({ p: geometry.raHead, text: "RA/DEC", color: "#d6e8ff" });
         labels.push({ p: geometry.cwWeightInner, text: "CW", color: "#d6e8ff" });
       }
 
-      labels.push({ p: geometry.saddle, text: scope.name, color });
+      if (state.telescopes.length > 1) labels.push({ p: geometry.saddle, text: scope.name, color });
     } else {
       const geometry = getAzOtaGeometry(scope);
       const azHead = geometry.azHead;
@@ -1255,147 +1288,230 @@ function renderLaserSide(svg, sideRot, xToPx, zToPx) {
   });
 }
 
-function drawMountView() {
-  const svg = document.getElementById("mount-view");
-  if (!svg) return;
-  svg.innerHTML = "";
+function createMountCamera(points, width, height) {
+  const yaw = degToRad(runtime.mountViewYawDeg);
+  const pitch = degToRad(runtime.mountViewPitchDeg);
+  const cosYaw = Math.cos(yaw);
+  const sinYaw = Math.sin(yaw);
+  const cosPitch = Math.cos(pitch);
+  const sinPitch = Math.sin(pitch);
+  const rotate = (pt) => {
+    const x = pt.x * cosYaw - pt.y * sinYaw;
+    const y = pt.x * sinYaw + pt.y * cosYaw;
+    return { x, y: y * cosPitch - pt.z * sinPitch, z: y * sinPitch + pt.z * cosPitch };
+  };
 
-  const W = 640;
-  const H = 420;
-  const padX = 34;
-  const padTop = 28;
-  const padBottom = 34;
-  const mountScope = getMountScope();
-  if (!mountScope) return;
-
-  const mountAxis = getMountAxisPoint(mountScope);
-  const scene = buildMountScopeScene3D();
-  const scenePoints = [];
-  const viewX = (pt) => pt.y + pt.x * 0.42;
-  scene.forEach((obj) => {
-    obj.rods.forEach((rod) => scenePoints.push(rod.a, rod.b));
-    obj.circles.forEach((circle) => scenePoints.push(circle.c));
-    obj.labels.forEach((label) => scenePoints.push(label.p));
-  });
-  scenePoints.push(v3(0, 0, 0), v3(mountAxis.x, mountAxis.y, 0), mountAxis);
-
-  const bounds = scenePoints.reduce(
+  const rotated = points.map(rotate);
+  const bounds = rotated.reduce(
     (acc, pt) => ({
-      minX: Math.min(acc.minX, viewX(pt)),
-      maxX: Math.max(acc.maxX, viewX(pt)),
-      minZ: Math.min(acc.minZ, pt.z),
-      maxZ: Math.max(acc.maxZ, pt.z)
+      minX: Math.min(acc.minX, pt.x),
+      maxX: Math.max(acc.maxX, pt.x),
+      minY: Math.min(acc.minY, pt.z),
+      maxY: Math.max(acc.maxY, pt.z)
     }),
-    { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity }
+    { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
   );
-  const annotationLeftMm = Math.min(bounds.minX, -520);
-  const annotationRightMm = Math.max(bounds.maxX, mountScope.posNS + 560);
-  const annotationTopMm = Math.max(bounds.maxZ + 150, mountAxis.z + mountScope.gemAxisLength + 260);
-  const annotationBounds = {
-    minX: annotationLeftMm,
-    maxX: annotationRightMm,
-    minZ: 0,
-    maxZ: annotationTopMm
+  const pad = Math.min(width, height) * 0.09;
+  const scale = Math.min((width - pad * 2) / Math.max(1, bounds.maxX - bounds.minX), (height - pad * 2) / Math.max(1, bounds.maxY - bounds.minY));
+  const centerX = (bounds.minX + bounds.maxX) * 0.5;
+  const centerY = (bounds.minY + bounds.maxY) * 0.5;
+
+  return {
+    scale,
+    project(pt) {
+      const r = rotate(pt);
+      return {
+        x: width * 0.5 + (r.x - centerX) * scale,
+        y: height * 0.53 - (r.z - centerY) * scale,
+        depth: r.y
+      };
+    }
   };
-  const spanX = Math.max(1, annotationBounds.maxX - annotationBounds.minX);
-  const spanZ = Math.max(1, annotationBounds.maxZ - annotationBounds.minZ);
-  const usableW = W - padX * 2;
-  const usableH = H - padTop - padBottom;
-  const scale = Math.min(usableW / spanX, usableH / spanZ);
-  const offsetX = padX + (usableW - spanX * scale) / 2;
-  const offsetY = padTop + (usableH - spanZ * scale) / 2;
-  const xToPx = (northMm) => offsetX + (northMm - annotationBounds.minX) * scale;
-  const zToPx = (z) => offsetY + (annotationBounds.maxZ - z) * scale;
-  const floorY = zToPx(0);
-  const domeCenterX = xToPx(0);
-  const mountX = xToPx(mountScope.posNS);
-  const mountAxisY = zToPx(mountAxis.z);
-  const mountGeometry = mountScope.mountType === "EQ" ? getEqMountGeometry(mountScope) : null;
-  const projectMountPt = (pt) => ({ x: xToPx(viewX(pt)), y: zToPx(pt.z) });
-  const appendText = (text, attrs) => {
-    const item = svgEl("text", attrs);
-    item.textContent = text;
-    svg.append(item);
-    return item;
-  };
-  const appendGuide = (attrs) => svg.append(svgEl("line", attrs));
+}
 
-  svg.append(
-    svgEl("line", { x1: padX, y1: floorY, x2: W - padX, y2: floorY, stroke: "rgba(238,248,255,0.52)", "stroke-width": 1.4 }),
-    svgEl("line", { x1: mountX, y1: padTop, x2: mountX, y2: floorY, stroke: "rgba(255,93,255,0.72)", "stroke-width": 1.8 }),
-    svgEl("line", { x1: domeCenterX, y1: floorY, x2: domeCenterX, y2: floorY - 70, stroke: "rgba(238,248,255,0.62)", "stroke-width": 1.1, "stroke-dasharray": "4 4" })
-  );
+function mountStrokePx(mm, scale, minPx = 2) {
+  return Math.max(minPx, mm * scale * 0.18);
+}
 
-  appendGuide({ x1: mountX, y1: floorY, x2: mountX, y2: mountAxisY, stroke: "rgba(255,255,255,0.8)", "stroke-width": 1.1, "stroke-dasharray": "4 4" });
-  appendGuide({ x1: domeCenterX, y1: mountAxisY, x2: mountX, y2: mountAxisY, stroke: "rgba(255,255,255,0.8)", "stroke-width": 1.1, "stroke-dasharray": "4 4" });
-  appendGuide({ x1: mountX - 9, y1: mountAxisY, x2: mountX + 9, y2: mountAxisY, stroke: "rgba(255,255,255,0.9)", "stroke-width": 1 });
-  appendGuide({ x1: mountX - 9, y1: floorY, x2: mountX + 9, y2: floorY, stroke: "rgba(255,255,255,0.9)", "stroke-width": 1 });
+function mountTubePx(mm, scale, minPx = 8) {
+  return Math.max(minPx, mm * scale * 0.58);
+}
 
-  const mountPt = projectMountPt(mountAxis);
-  svg.append(svgEl("circle", { cx: mountPt.x, cy: mountPt.y, r: 5.5, fill: "rgba(122,215,255,0.9)", stroke: "rgba(220,246,255,0.95)", "stroke-width": 1.5 }));
+function drawCanvasLine(ctx, a, b, widthPx, fill, stroke, edgePx) {
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = widthPx + edgePx * 2;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+  ctx.strokeStyle = fill;
+  ctx.lineWidth = widthPx;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(250,255,255,0.26)";
+  ctx.lineWidth = Math.max(1, widthPx * 0.12);
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y - widthPx * 0.22);
+  ctx.lineTo(b.x, b.y - widthPx * 0.22);
+  ctx.stroke();
+  ctx.restore();
+}
 
-  scene.forEach((obj) => {
-    obj.rods.forEach((rod) => {
-      const a = projectMountPt(rod.a);
-      const b = projectMountPt(rod.b);
-      const widthPx = rod.isTube
-        ? tubePxFromMm(rod.diameterMm, scale, 4)
-        : rod.isCounterweightBar
-          ? counterweightPxFromMm(rod.diameterMm, scale, 4)
-          : strokePxFromMm(rod.diameterMm, scale, 4);
-      if (rod.isRaHousing || rod.isDecHousing || rod.isSaddlePlate) {
-        drawProjectedBox(svg, a, b, widthPx, rod.fill, rod.stroke, strokePxFromMm(rod.swMm ?? 8, scale, 1));
-      } else {
-        drawProjectedRod(svg, a, b, widthPx, rod.fill, rod.stroke, strokePxFromMm(rod.swMm ?? 8, scale, 1));
-      }
+function drawCanvasDisc(ctx, p, radiusPx, fill, stroke, edgePx, squash = 1) {
+  ctx.save();
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = edgePx;
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y, radiusPx, radiusPx * squash, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,0.16)";
+  ctx.beginPath();
+  ctx.ellipse(p.x - radiusPx * 0.22, p.y - radiusPx * 0.22, radiusPx * 0.36, radiusPx * 0.18, -0.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCanvasBox(ctx, camera, rod, widthMm) {
+  const axis = v3Norm(v3Add(rod.b, v3Scale(rod.a, -1)));
+  let across = v3Norm(v3Cross(axis, v3(0, 0, 1)));
+  if (Math.hypot(across.x, across.y, across.z) < 1e-6) across = v3(1, 0, 0);
+  const upFace = v3Norm(v3Cross(across, axis));
+  const halfW = widthMm * 0.5;
+  const halfD = widthMm * (rod.isSaddlePlate ? 0.16 : 0.32);
+  const corners = [
+    v3Add(v3Add(rod.a, v3Scale(across, halfW)), v3Scale(upFace, halfD)),
+    v3Add(v3Add(rod.b, v3Scale(across, halfW)), v3Scale(upFace, halfD)),
+    v3Add(v3Add(rod.b, v3Scale(across, -halfW)), v3Scale(upFace, halfD)),
+    v3Add(v3Add(rod.a, v3Scale(across, -halfW)), v3Scale(upFace, halfD)),
+    v3Add(v3Add(rod.a, v3Scale(across, halfW)), v3Scale(upFace, -halfD)),
+    v3Add(v3Add(rod.b, v3Scale(across, halfW)), v3Scale(upFace, -halfD)),
+    v3Add(v3Add(rod.b, v3Scale(across, -halfW)), v3Scale(upFace, -halfD)),
+    v3Add(v3Add(rod.a, v3Scale(across, -halfW)), v3Scale(upFace, -halfD))
+  ].map((pt) => camera.project(pt));
+  const isMountBody = rod.isRaHousing || rod.isDecHousing || rod.isSaddleSupport || rod.isSaddlePlate;
+  const faces = [
+    { ids: [0, 1, 2, 3], fill: rod.fill },
+    { ids: [4, 5, 6, 7], fill: isMountBody ? "rgba(26,28,34,0.98)" : "rgba(22,36,55,0.62)" },
+    { ids: [0, 1, 5, 4], fill: isMountBody ? "rgba(88,92,100,0.96)" : "rgba(235,248,255,0.32)" },
+    { ids: [1, 2, 6, 5], fill: isMountBody ? "rgba(42,45,52,0.98)" : "rgba(93,129,160,0.42)" },
+    { ids: [2, 3, 7, 6], fill: isMountBody ? "rgba(20,22,28,0.98)" : "rgba(18,33,51,0.5)" },
+    { ids: [3, 0, 4, 7], fill: isMountBody ? "rgba(70,74,82,0.97)" : "rgba(160,200,232,0.28)" }
+  ].sort((a, b) => a.ids.reduce((sum, id) => sum + corners[id].depth, 0) - b.ids.reduce((sum, id) => sum + corners[id].depth, 0));
+
+  ctx.save();
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = isMountBody ? "rgba(208,214,224,0.68)" : rod.stroke;
+  ctx.lineWidth = Math.max(1, mountStrokePx(rod.swMm ?? 8, camera.scale, isMountBody ? 0.7 : 1));
+  faces.forEach((face) => {
+    ctx.fillStyle = face.fill;
+    ctx.beginPath();
+    face.ids.forEach((id, idx) => {
+      if (idx === 0) ctx.moveTo(corners[id].x, corners[id].y);
+      else ctx.lineTo(corners[id].x, corners[id].y);
     });
-
-    obj.circles.forEach((c) => {
-      const p = projectMountPt(c.c);
-      if (c.isCounterweight && c.depthBack && c.depthFront) {
-        drawProjectedCylinder(
-          svg,
-          projectMountPt(c.depthBack),
-          projectMountPt(c.depthFront),
-          counterweightPxFromMm(c.rMm * 2, scale, 4) * 0.5,
-          c.fill,
-          c.stroke,
-          strokePxFromMm(c.swMm, scale, 1)
-        );
-        return;
-      }
-      svg.append(
-        svgEl("circle", {
-          cx: p.x,
-          cy: p.y,
-          r: c.isAperture
-            ? tubePxFromMm(c.rMm * 2, scale, 3) * 0.5
-            : c.isCounterweight
-              ? counterweightPxFromMm(c.rMm * 2, scale, 4) * 0.5
-              : radiusPxFromMm(c.rMm, scale, 2.2),
-          fill: c.fill,
-          stroke: c.stroke,
-          "stroke-width": strokePxFromMm(c.swMm, scale, 1)
-        })
-      );
-    });
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
   });
+  ctx.restore();
+}
 
-  appendGuide({ x1: mountPt.x - 36, y1: mountPt.y - 22, x2: mountPt.x - 7, y2: mountPt.y - 4, stroke: "rgba(255,114,255,0.78)", "stroke-width": 1, "stroke-dasharray": "3 3" });
-  appendText("Centre Position", { x: mountPt.x - 40, y: mountPt.y - 36, fill: "#ff72ff", "font-size": 10, "font-weight": 700, "text-anchor": "end" });
-  appendText("of Mount", { x: mountPt.x - 40, y: mountPt.y - 24, fill: "#ff72ff", "font-size": 10, "font-weight": 700, "text-anchor": "end" });
-  appendText(`${Math.abs(mountScope.posNS).toFixed(0)} mm ${mountScope.posNS >= 0 ? "North" : "South"}`, { x: mountX + 12, y: floorY - 34, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
-  appendText(`${Math.abs(mountScope.posEW).toFixed(0)} mm ${mountScope.posEW >= 0 ? "East" : "West"}`, { x: mountX + 12, y: floorY - 23, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
-  appendText("of dome center", { x: mountX + 12, y: floorY - 12, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
-  appendText(`A = ${mountAxis.z.toFixed(0)} mm`, { x: mountX + 10, y: (mountAxisY + floorY) / 2 - 5, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
-  appendText(`+Up/-Down = ${mountScope.posUD.toFixed(0)} mm`, { x: mountX + 10, y: (mountAxisY + floorY) / 2 + 7, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
-
-  if (mountGeometry) {
-    const aperturePt = projectMountPt(mountGeometry.tubeFront);
-    appendGuide({ x1: mountPt.x, y1: mountPt.y, x2: aperturePt.x, y2: aperturePt.y, stroke: "rgba(255,255,255,0.84)", "stroke-width": 1.1, "stroke-dasharray": "4 4" });
-    appendText(`GEM Axis Length = ${mountScope.gemAxisLength.toFixed(0)} mm`, { x: (mountPt.x + aperturePt.x) / 2 + 8, y: (mountPt.y + aperturePt.y) / 2 - 8, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
-    appendText(`Lateral Axis Length = ${mountScope.lateralAxisLength.toFixed(0)} mm`, { x: mountPt.x + 14, y: mountPt.y + 18, fill: "#eff7ff", "font-size": 9, "font-weight": 700 });
+function drawMountBackground(ctx, width, height) {
+  ctx.clearRect(0, 0, width, height);
+  const gradient = ctx.createRadialGradient(width * 0.25, height * 0.18, 0, width * 0.5, height * 0.52, Math.max(width, height) * 0.7);
+  gradient.addColorStop(0, "rgba(42,70,105,0.92)");
+  gradient.addColorStop(1, "rgba(14,22,35,0.98)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "rgba(255,255,255,0.035)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x < width; x += 32) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.stroke();
   }
+  for (let y = 0; y < height; y += 32) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+  }
+}
+
+async function ensureMountThreeView() {
+  if (runtime.mountThreeView) return runtime.mountThreeView;
+  if (runtime.mountThreeInitPromise) return runtime.mountThreeInitPromise;
+
+  const canvas = document.getElementById("mount-view");
+  const status = document.getElementById("mount-view-status");
+  if (!canvas) return null;
+
+  runtime.mountThreeInitPromise = import("./mount-three.js")
+    .then((module) => {
+      runtime.mountThreeView = module.createMountThreeView({ canvas, statusEl: status });
+      return runtime.mountThreeView;
+    })
+    .catch((error) => {
+      runtime.mountThreeInitPromise = null;
+      if (status) status.textContent = `Three.js mount view failed: ${error.message}`;
+      throw error;
+    });
+
+  return runtime.mountThreeInitPromise;
+}
+
+function getMountViewConfig() {
+  const mount = getMountScope();
+  if (!mount) return null;
+  return {
+    latitudeDeg: state.latitudeDeg,
+    domeRadiusMm: state.domeRadiusMm,
+    mountViewMode: state.mountViewMode,
+    mount: {
+      mountType: mount.mountType,
+      posNS: Number(mount.posNS) || 0,
+      posEW: Number(mount.posEW) || 0,
+      posUD: Number(mount.posUD) || 0,
+      hourAngleDeg: Number(mount.hourAngleDeg) || 0,
+      declinationDeg: Number(mount.declinationDeg) || 0,
+      azimuth: Number(mount.azimuth) || 0,
+      elevation: Number(mount.elevation) || 0,
+      counterweightShaftLengthMm: Number(mount.counterweightShaftLengthMm) || 820,
+      counterweightDiameterMm: Number(mount.counterweightDiameterMm) || 170,
+      pierSideMode: mount.pierSideMode,
+      pierSide: mount.pierSide
+    },
+    scopes: state.telescopes.map((scope) => ({
+      id: scope.id,
+      name: scope.name,
+      otaLayout: scope.otaLayout,
+      otaSideOffsetMm: Number(scope.otaSideOffsetMm) || 0,
+      otaPiggybackOffsetMm: Number(scope.otaPiggybackOffsetMm) || 0,
+      gemAxisLength: Number(scope.gemAxisLength) || 435,
+      lateralAxisLength: Number(scope.lateralAxisLength) || 0,
+      telescopeDiameterMm: Number(scope.telescopeDiameterMm) || 120,
+      tubeLengthMm: Number(scope.tubeLengthMm) || 760
+    }))
+  };
+}
+
+function drawMountView() {
+  const config = getMountViewConfig();
+  if (!config) return;
+  ensureMountThreeView()
+    .then((view) => {
+      if (!view) return;
+      view.update(config);
+    })
+    .catch(() => {});
 }
 
 function drawTopView() {
@@ -2131,6 +2247,52 @@ function wireButtons() {
         panel.classList.toggle("active", isActive);
         panel.hidden = !isActive;
       }
+      renderAll();
+    });
+  }
+
+  const renderMode = document.getElementById("mount-render-mode");
+  const modelUrl = document.getElementById("mount-model-url");
+  const loadUrlBtn = document.getElementById("mount-load-url");
+  const modelFile = document.getElementById("mount-model-file");
+  const resetViewBtn = document.getElementById("mount-reset-view");
+
+  if (renderMode) {
+    renderMode.value = state.mountViewMode;
+    renderMode.addEventListener("change", () => {
+      state.mountViewMode = renderMode.value === "GLB" ? "GLB" : "PROCEDURAL";
+      renderAll();
+    });
+  }
+
+  if (modelUrl) {
+    modelUrl.value = state.mountModelUrl;
+    modelUrl.addEventListener("input", () => {
+      state.mountModelUrl = modelUrl.value.trim();
+    });
+  }
+
+  if (loadUrlBtn) {
+    loadUrlBtn.addEventListener("click", () => {
+      state.mountViewMode = "GLB";
+      if (renderMode) renderMode.value = "GLB";
+      ensureMountThreeView().then((view) => view?.loadGlbFromUrl(state.mountModelUrl)).catch(() => {});
+    });
+  }
+
+  if (modelFile) {
+    modelFile.addEventListener("change", () => {
+      const file = modelFile.files?.[0] ?? null;
+      if (!file) return;
+      state.mountViewMode = "GLB";
+      if (renderMode) renderMode.value = "GLB";
+      ensureMountThreeView().then((view) => view?.loadGlbFromFile(file)).catch(() => {});
+    });
+  }
+
+  if (resetViewBtn) {
+    resetViewBtn.addEventListener("click", () => {
+      ensureMountThreeView().then((view) => view?.resetView()).catch(() => {});
     });
   }
 }

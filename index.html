@@ -72,7 +72,27 @@
               <h3>Mount Geometry</h3>
               <span class="legend">NINA reference</span>
             </div>
-            <svg id="mount-view" viewBox="0 0 640 420" role="img" aria-label="Mount and OTA geometry reference view"></svg>
+            <div class="mount-view-tools">
+              <div class="field compact-field">
+                <label for="mount-render-mode">Mount Renderer</label>
+                <select id="mount-render-mode">
+                  <option value="PROCEDURAL">Procedural Mesh</option>
+                  <option value="GLB">Imported GLB</option>
+                </select>
+              </div>
+              <div class="field mount-url-field">
+                <label for="mount-model-url">GLB Model URL</label>
+                <input id="mount-model-url" type="url" placeholder="https://example.com/gem-mount.glb" />
+              </div>
+              <div class="mount-view-actions">
+                <button id="mount-load-url" type="button">Load URL</button>
+                <label class="button-like" for="mount-model-file">Import GLB</label>
+                <input id="mount-model-file" type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" hidden />
+                <button id="mount-reset-view" type="button">Reset View</button>
+              </div>
+            </div>
+            <canvas id="mount-view" class="mount-canvas" width="960" height="630" role="img" aria-label="Interactive 3D mount and OTA geometry reference view"></canvas>
+            <div id="mount-view-status" class="mount-view-status">Initializing 3D renderer...</div>
           </div>
         </div>
 
