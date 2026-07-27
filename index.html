@@ -28,7 +28,7 @@
         <div class="control-grid" id="global-controls"></div>
 
         <h2>Mount</h2>
-        <div class="control-grid" id="mount-controls"></div>
+        <div class="control-grid" id="mount-controls"></div> 
 
         <div class="scope-header">
           <h3>OTAs</h3>
@@ -36,9 +36,15 @@
         </div>
         <div id="telescopes-container" class="telescopes-container"></div>
       </section>
-
+   
       <section class="viewer-panel">
-        <div class="views-row">
+        <div class="view-tabs" role="tablist" aria-label="Viewer modes">
+          <button class="view-tab active" id="tab-dome" type="button" role="tab" aria-selected="true" aria-controls="panel-dome" data-view-tab="dome">Dome Views</button>
+          <button class="view-tab" id="tab-mount" type="button" role="tab" aria-selected="false" aria-controls="panel-mount" data-view-tab="mount">Mount Geometry</button>
+        </div>
+
+        <div class="view-tab-panel active" id="panel-dome" role="tabpanel" aria-labelledby="tab-dome" data-view-panel="dome">
+          <div class="views-row">
           <div class="view-card">
             <div class="view-title-row">
               <h3>Top View (Dome Plan)</h3>
