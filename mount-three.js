@@ -176,6 +176,7 @@ function buildRcTrussOta(scopeGroup, tubeLenMm, tubeRadiusMm) {
 }
 
 function buildEqScene(root, config, importedAsset) {
+  root.userData.activeOpticalRay = null;
   const mount = config.mount;
   const latitudeDeg = config.latitudeDeg;
   const latAbs = degToRad(clamp(Math.abs(latitudeDeg), 0, 89.5));
@@ -335,6 +336,7 @@ function buildEqScene(root, config, importedAsset) {
   const sideDir = v3Norm(v3RotateAroundAxis(v3(1, 0, 0), raUnit, -hourAngleRad)).multiplyScalar(pierSideSign);
   const optical = pointing.clone();
   const piggyDir = getPiggybackDir(optical, sideDir);
+  const otaRayCandidates = [];
 
   config.scopes.forEach((scope, index) => {
     const gemAxisLength = Math.max(70, Number(scope.gemAxisLength) || 435);
@@ -372,6 +374,20 @@ function buildEqScene(root, config, importedAsset) {
     otaMount.position.set(0, 0, 42 * MM);
     scopeGroup.add(otaMount);
 
+    const tubeLenMm = Math.max(680, tubeLen);
+    const centerOffsetMm = index === 0
+      ? tubeLenMm * 0.1
+      : tubeLen * (1 / 6) + tubeRadius + 18;
+    const frontOffsetMm = index === 0
+      ? tubeLenMm * 0.32
+      : tubeLen * (2 / 3) + tubeRadius + 18;
+    otaRayCandidates.push({
+      scopeId: Number(scope.id) || index + 1,
+      otaMount,
+      centerOffsetM: centerOffsetMm * MM,
+      frontOffsetM: frontOffsetMm * MM
+    });
+
     if (index === 0) {
       buildRcTrussOta(otaMount, Math.max(680, tubeLen), Math.max(70, tubeRadius * 1.55));
     } else {
@@ -392,6 +408,16 @@ function buildEqScene(root, config, importedAsset) {
 
   if (importedAsset) {
     attachImportedAsset(root, headGroup, haGroup, decRotGroup, importedAsset);
+  }
+
+  root.updateMatrixWorld(true);
+  const preferredScopeId = Number(config.activeScopeId);
+  const selected = otaRayCandidates.find((c) => c.scopeId === preferredScopeId) || otaRayCandidates[0] || null;
+  if (selected) {
+    const origin = selected.otaMount.localToWorld(new THREE.Vector3(0, 0, selected.centerOffsetM));
+    const front = selected.otaMount.localToWorld(new THREE.Vector3(0, 0, selected.frontOffsetM));
+    const dir = front.clone().sub(origin).normalize();
+    root.userData.activeOpticalRay = { origin, dir, scopeId: selected.scopeId };
   }
 }
 
@@ -469,6 +495,7 @@ function rolesAllFound(roles) {
 }
 
 function buildAzScene(root, config) {
+  root.userData.activeOpticalRay = null;
   const mount = config.mount;
   const pierMat = createPhysicalMaterial("#cfd8e5", 0.32, 0.28);
   const bodyMat = createPhysicalMaterial("#2f343d", 0.54, 0.42);
@@ -493,6 +520,12 @@ function buildAzScene(root, config) {
   tube.rotation.x = Math.PI * 0.5;
   tube.position.z = 380 * MM * 0.5;
   altGroup.add(tube);
+
+  root.updateMatrixWorld(true);
+  const origin = altGroup.localToWorld(new THREE.Vector3(0, 0, 190 * MM));
+  const front = altGroup.localToWorld(new THREE.Vector3(0, 0, 570 * MM));
+  const dir = front.clone().sub(origin).normalize();
+  root.userData.activeOpticalRay = { origin, dir, scopeId: Number(config.activeScopeId) || null };
 }
 
 function frameObject(camera, controls, object, direction, padding = 1.28) {
@@ -512,6 +545,14 @@ function frameObject(camera, controls, object, direction, padding = 1.28) {
   camera.far = Math.max(20, distance * 12);
   camera.updateProjectionMatrix();
   controls.update();
+}
+
+export function buildMountIntoGroup(root, config, importedAsset = null) {
+  if (config.mount.mountType === "EQ") {
+    buildEqScene(root, config, importedAsset);
+  } else {
+    buildAzScene(root, config);
+  }
 }
 
 export function createMountThreeView({ canvas, statusEl }) {
@@ -626,11 +667,7 @@ export function createMountThreeView({ canvas, statusEl }) {
     clearRoot();
     const mountRoot = new THREE.Group();
     root.add(mountRoot);
-    if (config.mount.mountType === "EQ") {
-      buildEqScene(mountRoot, config, config.mountViewMode === "GLB" ? importedAsset : null);
-    } else {
-      buildAzScene(mountRoot, config);
-    }
+    buildMountIntoGroup(mountRoot, config, config.mountViewMode === "GLB" ? importedAsset : null);
 
     frameObject(camera, controls, mountRoot, defaultViewDirection, config.mount.mountType === "EQ" ? 1.32 : 1.24);
 

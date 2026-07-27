@@ -302,7 +302,7 @@ button {
   font-size: 0.88rem;
 }
 
-svg,
+.dome-canvas,
 .mount-canvas {
   width: 100%;
   border-radius: 10px;
@@ -312,6 +312,18 @@ svg,
     radial-gradient(circle at 25% 20%, rgba(103, 131, 180, 0.14), rgba(21, 32, 50, 0.9));
   background-size: 22px 22px, 22px 22px, cover;
   border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.dome-canvas {
+  display: block;
+}
+
+.dome-top-canvas {
+  aspect-ratio: 1 / 1;
+}
+
+.dome-side-canvas {
+  aspect-ratio: 640 / 420;
 }
 
 .mount-canvas {

@@ -6,6 +6,7 @@ const palette = ["#7ad7ff", "#ff9f6e", "#bba4ff", "#71f3a9", "#ffd56f", "#ff7bb5
 const state = {
   domeRadiusMm: 1500,
   slitWidthMm: 1100,
+  domeOpacity: 0.5,
   maxSlitOpeningDeg: 85,
   slitWallHeightMm: 1500,
   azToleranceDeg: 2,
@@ -46,6 +47,9 @@ const runtime = {
   trackingFlipProgress: 0,
   trackingFlipFromPierSide: null,
   trackingFlipToPierSide: null,
+  domeFollowRayMm: null,
+  domeThreeView: null,
+  domeThreeInitPromise: null,
   mountThreeView: null,
   mountThreeInitPromise: null,
   mountViewYawDeg: -36,
@@ -60,6 +64,7 @@ let nextScopeId = 2;
 const globalControls = [
   { key: "domeRadiusMm", label: "Dome Radius (mm)", min: 500, max: 12000, step: 10 },
   { key: "slitWidthMm", label: "Slit Width (mm)", min: 100, max: 20000, step: 10 },
+  { key: "domeOpacity", label: "Dome Opacity (0-1)", min: 0.05, max: 1, step: 0.05 },
   { key: "maxSlitOpeningDeg", label: "Shutter Vertical Limit (deg)", min: 5, max: 85, step: 1 },
   { key: "slitWallHeightMm", label: "Slit Wall Height (mm)", min: 300, max: 12000, step: 10 },
   { key: "azToleranceDeg", label: "Azimuth Tolerance (deg)", min: 0, max: 30, step: 1 },
@@ -452,6 +457,23 @@ function getPointAzimuthDeg(point) {
 }
 
 function getScopeDomeHit(scope) {
+  const followRay = runtime.domeFollowRayMm;
+  if (followRay && Number(scope?.id) === Number(followRay.scopeId)) {
+    const origin = v3(
+      Number(followRay.origin?.x) || 0,
+      Number(followRay.origin?.y) || 0,
+      Number(followRay.origin?.z) || 0
+    );
+    const dir = v3Norm(v3(
+      Number(followRay.dir?.x) || 0,
+      Number(followRay.dir?.y) || 0,
+      Number(followRay.dir?.z) || 0
+    ));
+    if (Math.hypot(dir.x, dir.y, dir.z) > 1e-8) {
+      return intersectRayWithDome(origin, dir, state.domeRadiusMm);
+    }
+  }
+
   const ray = getScopeOpticalRay(scope);
   return intersectRayWithDome(ray.origin, ray.dir, state.domeRadiusMm);
 }
@@ -1529,6 +1551,29 @@ async function ensureMountThreeView() {
   return runtime.mountThreeInitPromise;
 }
 
+async function ensureDomeThreeView() {
+  if (runtime.domeThreeView) return runtime.domeThreeView;
+  if (runtime.domeThreeInitPromise) return runtime.domeThreeInitPromise;
+
+  const topCanvas = document.getElementById("top-view");
+  const sideCanvas = document.getElementById("side-view");
+  if (!topCanvas || !sideCanvas) return null;
+
+  runtime.domeThreeInitPromise = import("./dome-three.js")
+    .then((module) => {
+      runtime.domeThreeView = module.createDomeThreeViews({ topCanvas, sideCanvas });
+      return runtime.domeThreeView;
+    })
+    .catch((error) => {
+      runtime.domeThreeInitPromise = null;
+      const mountStatus = document.getElementById("mount-view-status");
+      if (mountStatus) mountStatus.textContent = `Three.js dome views failed: ${error.message}`;
+      throw error;
+    });
+
+  return runtime.domeThreeInitPromise;
+}
+
 function getMountViewConfig() {
   const mount = getMountScope();
   if (!mount) return null;
@@ -1567,6 +1612,60 @@ function getMountViewConfig() {
       tubeLengthMm: Number(scope.tubeLengthMm) || 760
     }))
   };
+}
+
+function getDomeViewConfig() {
+  const base = getMountViewConfig();
+  if (!base) return null;
+  const followScope = getFollowScope() ?? getMountScope();
+  const followRay = followScope ? getScopeOpticalRay(followScope) : null;
+  return {
+    ...base,
+    activeScopeId: followScope ? Number(followScope.id) || null : null,
+    domeAzimuthDeg: getDomeAzimuthDeg(),
+    domeOpacity: clamp(Number(state.domeOpacity), 0.05, 1),
+    slitWallHeightMm: Number(state.slitWallHeightMm) || Number(state.domeRadiusMm) || 1500,
+    maxSlitOpeningDeg: Number(state.maxSlitOpeningDeg) || 85,
+    effectiveSlitWidthMm: getEffectiveSlitWidthMm(),
+    sideViewRotationDeg: Number(state.sideViewRotationDeg) || 0,
+    showLaserLine: Boolean(state.showLaserLine),
+    followOptical: followRay
+      ? {
+          x: Number(followRay.dir.x) || 0,
+          y: Number(followRay.dir.y) || 0,
+          z: Number(followRay.dir.z) || 0
+        }
+      : null,
+    followOpticalOrigin: followRay
+      ? {
+          x: Number(followRay.origin.x) || 0,
+          y: Number(followRay.origin.y) || 0,
+          z: Number(followRay.origin.z) || 0
+        }
+      : null
+  };
+}
+
+function drawDomeViews() {
+  const config = getDomeViewConfig();
+  if (!config) return;
+  ensureDomeThreeView()
+    .then((view) => {
+      if (!view) return;
+      const result = view.update(config);
+      runtime.domeFollowRayMm = result?.activeOpticalRayMm || null;
+
+      if (!state.simulateDomeSlew && state.domeFollowsTelescope) {
+        const correctedTarget = getDomeTargetAzimuthDeg();
+        if (Math.abs(signedDeltaDeg(correctedTarget, runtime.currentDomeAzimuthDeg)) > 0.05) {
+          runtime.currentDomeAzimuthDeg = correctedTarget;
+          const refreshedConfig = getDomeViewConfig();
+          if (refreshedConfig) view.update(refreshedConfig);
+          drawDiagnostics();
+        }
+      }
+    })
+    .catch(() => {});
 }
 
 function drawMountView() {
@@ -1835,9 +1934,8 @@ function renderAll() {
     runtime.settleUntilMs = 0;
   }
 
-  drawTopView();
+  drawDomeViews();
   drawMountView();
-  drawSideView();
   drawDiagnostics();
   ensureDomeAnimation();
 }
@@ -2171,6 +2269,26 @@ function renderGlobalControls() {
     field.append(label, input);
     host.appendChild(field);
   }
+
+  const domeOpacitySliderField = document.createElement("div");
+  domeOpacitySliderField.className = "field";
+  const domeOpacitySliderLabel = document.createElement("label");
+  domeOpacitySliderLabel.setAttribute("for", "dome-opacity-slider");
+  domeOpacitySliderLabel.textContent = `Dome Opacity Slider (${Number(state.domeOpacity).toFixed(2)})`;
+  const domeOpacitySlider = document.createElement("input");
+  domeOpacitySlider.id = "dome-opacity-slider";
+  domeOpacitySlider.type = "range";
+  domeOpacitySlider.min = "0.05";
+  domeOpacitySlider.max = "1";
+  domeOpacitySlider.step = "0.01";
+  domeOpacitySlider.value = String(clamp(Number(state.domeOpacity) || 0.5, 0.05, 1));
+  domeOpacitySlider.addEventListener("input", () => {
+    state.domeOpacity = clamp(Number(domeOpacitySlider.value), 0.05, 1);
+    domeOpacitySliderLabel.textContent = `Dome Opacity Slider (${Number(state.domeOpacity).toFixed(2)})`;
+    renderAll();
+  });
+  domeOpacitySliderField.append(domeOpacitySliderLabel, domeOpacitySlider);
+  host.appendChild(domeOpacitySliderField);
 
   const sideRotSliderField = document.createElement("div");
   sideRotSliderField.className = "field";
