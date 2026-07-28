@@ -25,40 +25,91 @@
           <h1 class="mb-2">Dome Viewer Studio</h1>
           <p class="subtitle mb-0">Dome slit clearance, mount geometry, and tracking diagnostics in one control room.</p>
         </div>
-        <div class="chip-row">
-          <span class="chip">Bootstrap 5</span>
-          <span class="chip">Three.js</span>
-          <span class="chip">Realtime</span>
-          <button id="toggle-settings" type="button" class="btn btn-sm settings-toggle" aria-expanded="true" aria-controls="controls-panel">Hide Settings</button>
-        </div>
       </div>
     </header>
+
+    <button id="toggle-settings" type="button" class="side-rail-toggle" aria-expanded="true" aria-controls="controls-panel" aria-label="Hide settings panel">
+      <span class="toggle-arrow" aria-hidden="true">◀</span>
+      <span class="toggle-label">Hide</span>
+    </button>
 
     <main class="layout" id="main-layout">
       <aside class="controls-panel card shell-card" id="controls-panel">
         <div class="card-body p-3 p-lg-4">
-        <h2>Dome Settings</h2>
-        <div class="control-grid" id="global-controls"></div>
+          <div class="accordion config-accordion" id="config-accordion">
+            <div class="accordion-item">
+              <h2 class="accordion-header" id="heading-dome-settings">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-dome-settings" aria-expanded="false" aria-controls="collapse-dome-settings">
+                  Dome Settings
+                </button>
+              </h2>
+              <div id="collapse-dome-settings" class="accordion-collapse collapse" aria-labelledby="heading-dome-settings" data-bs-parent="#config-accordion">
+                <div class="accordion-body">
+                  <div class="control-grid" id="global-controls"></div>
+                </div>
+              </div>
+            </div>
 
-        <h2>Dome Sim</h2>
-        <div class="control-grid" id="dome-sim-controls"></div>
+            <div class="accordion-item">
+              <h2 class="accordion-header" id="heading-dome-sim">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-dome-sim" aria-expanded="false" aria-controls="collapse-dome-sim">
+                  Dome Sim
+                </button>
+              </h2>
+              <div id="collapse-dome-sim" class="accordion-collapse collapse" aria-labelledby="heading-dome-sim" data-bs-parent="#config-accordion">
+                <div class="accordion-body">
+                  <div class="control-grid" id="dome-sim-controls"></div>
+                </div>
+              </div>
+            </div>
 
-        <h2>Mount</h2>
-        <div class="control-grid" id="mount-controls"></div> 
+            <div class="accordion-item">
+              <h2 class="accordion-header" id="heading-mount-settings">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-mount-settings" aria-expanded="false" aria-controls="collapse-mount-settings">
+                  Mount
+                </button>
+              </h2>
+              <div id="collapse-mount-settings" class="accordion-collapse collapse" aria-labelledby="heading-mount-settings" data-bs-parent="#config-accordion">
+                <div class="accordion-body">
+                  <div class="control-grid" id="mount-controls"></div>
+                </div>
+              </div>
+            </div>
 
-        <div class="scope-header">
-          <h3>OTAs</h3>
-          <button id="add-scope" type="button" class="btn btn-sm btn-outline-primary">+ Add OTA</button>
-        </div>
-        <div id="telescopes-container" class="telescopes-container"></div>
+            <div class="accordion-item">
+              <h2 class="accordion-header" id="heading-ota-settings">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-ota-settings" aria-expanded="false" aria-controls="collapse-ota-settings">
+                  OTAs
+                </button>
+              </h2>
+              <div id="collapse-ota-settings" class="accordion-collapse collapse" aria-labelledby="heading-ota-settings" data-bs-parent="#config-accordion">
+                <div class="accordion-body">
+                  <div class="scope-header">
+                    <button id="add-scope" type="button" class="btn btn-sm btn-outline-primary">+ Add OTA</button>
+                  </div>
+                  <div id="telescopes-container" class="telescopes-container"></div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </aside>
 
       <section class="viewer-panel">
-        <div class="view-tabs card shell-card p-2" role="tablist" aria-label="Viewer modes">
-          <button class="view-tab active btn" id="tab-dome" type="button" role="tab" aria-selected="true" aria-controls="panel-dome" data-view-tab="dome">Dome Views</button>
-          <button class="view-tab btn" id="tab-mount" type="button" role="tab" aria-selected="false" aria-controls="panel-mount" data-view-tab="mount">Mount Geometry</button>
-          <button class="view-tab btn" id="tab-horizon" type="button" role="tab" aria-selected="false" aria-controls="panel-horizon" data-view-tab="horizon">Horizon</button>
+        <div class="card shell-card">
+          <div class="card-body p-2">
+            <ul class="view-tabs nav nav-tabs" role="tablist" aria-label="Viewer modes">
+              <li class="nav-item" role="presentation">
+                <button class="view-tab nav-link active" id="tab-dome" type="button" role="tab" aria-selected="true" aria-controls="panel-dome" data-view-tab="dome">Dome Views</button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="view-tab nav-link" id="tab-mount" type="button" role="tab" aria-selected="false" aria-controls="panel-mount" data-view-tab="mount">Mount Geometry</button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="view-tab nav-link" id="tab-horizon" type="button" role="tab" aria-selected="false" aria-controls="panel-horizon" data-view-tab="horizon">Horizon</button>
+              </li>
+            </ul>
+          </div>
         </div>
 
         <div class="view-tab-panel active" id="panel-dome" role="tabpanel" aria-labelledby="tab-dome" data-view-panel="dome">

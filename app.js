@@ -2867,10 +2867,22 @@ function wireButtons() {
   const settingsToggle = document.getElementById("toggle-settings");
   const layoutEl = document.getElementById("main-layout");
   if (settingsToggle && layoutEl) {
+    const toggleArrow = settingsToggle.querySelector(".toggle-arrow");
+    const toggleLabel = settingsToggle.querySelector(".toggle-label");
+    const applySettingsToggleState = (collapsed) => {
+      settingsToggle.classList.toggle("collapsed", collapsed);
+      settingsToggle.setAttribute("aria-expanded", String(!collapsed));
+      settingsToggle.setAttribute("aria-label", collapsed ? "Show settings panel" : "Hide settings panel");
+      if (toggleArrow) toggleArrow.textContent = collapsed ? "▶" : "◀";
+      if (toggleLabel) toggleLabel.textContent = collapsed ? "Settings" : "Hide";
+      if (!toggleArrow && !toggleLabel) settingsToggle.textContent = collapsed ? "▶ Settings" : "◀ Hide";
+    };
+
+    applySettingsToggleState(layoutEl.classList.contains("settings-collapsed"));
+
     settingsToggle.addEventListener("click", () => {
       const collapsed = layoutEl.classList.toggle("settings-collapsed");
-      settingsToggle.textContent = collapsed ? "Show Settings" : "Hide Settings";
-      settingsToggle.setAttribute("aria-expanded", String(!collapsed));
+      applySettingsToggleState(collapsed);
       renderAll();
     });
   }
