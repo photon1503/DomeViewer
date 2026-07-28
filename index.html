@@ -19,11 +19,12 @@
       <div class="chip-row">
         <span class="chip">Static Website</span>
         <span class="chip">Realtime 2D</span>
+        <button id="toggle-settings" type="button" class="settings-toggle" aria-expanded="true" aria-controls="controls-panel">Hide Settings</button>
       </div>
     </header>
 
-    <main class="layout">
-      <section class="controls-panel">
+    <main class="layout" id="main-layout">
+      <aside class="controls-panel" id="controls-panel">
         <h2>Dome Settings</h2>
         <div class="control-grid" id="global-controls"></div>
 
@@ -38,7 +39,7 @@
           <button id="add-scope" type="button">+ Add OTA</button>
         </div>
         <div id="telescopes-container" class="telescopes-container"></div>
-      </section>
+      </aside>
 
       <section class="viewer-panel">
         <div class="view-tabs" role="tablist" aria-label="Viewer modes">

@@ -226,8 +226,13 @@ export function createDomeThreeViews({ topCanvas, sideCanvas, statusEl }) {
   function resize() {
     const radius = Math.max(200, Number(latestConfig?.domeRadiusMm) || 1500) * MM;
     const wallHeight = Math.max(200, Number(latestConfig?.slitWallHeightMm) || latestConfig?.domeRadiusMm || 1500) * MM;
-    resizeOne(topRenderer, topCamera, topCanvas, radius * 1.2);
-    resizeOne(sideRenderer, sideCamera, sideCanvas, Math.max(radius + wallHeight, radius * 1.2));
+
+    // Tight fit so objects use as much canvas area as possible while avoiding clipping.
+    const topSpan = radius * 1.04;
+    const sideSpan = Math.max(radius * 1.06, radius + wallHeight * 0.62);
+
+    resizeOne(topRenderer, topCamera, topCanvas, topSpan);
+    resizeOne(sideRenderer, sideCamera, sideCanvas, sideSpan);
     render();
   }
 

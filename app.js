@@ -2444,12 +2444,8 @@ function renderMountControls() {
     ${isEq ? makeMountNumberField("counterweightDiameterMm", "CW Diameter (mm)", 30, 800, 5) : ""}
     ${isEq ? makeMountSelectField("pierSideMode", "Meridian Flip", ["AUTO", "MANUAL"]) : ""}
     ${isEq ? makeMountSelectField("pierSide", "Pier Side", ["WEST", "EAST"]) : ""}
-    ${isEq
-      ? makeMountNumberField("hourAngleDeg", "RA Axis / Hour Angle (deg)", -180, 180, 1)
-      : makeMountNumberField("azimuth", "Azimuth (deg)", 0, 359, 1)}
-    ${isEq
-      ? makeMountNumberField("declinationDeg", "DEC Axis / Declination (deg)", -90, 90, 1)
-      : makeMountNumberField("elevation", "Elevation (deg)", 0, 89, 1)}
+    ${isEq ? "" : makeMountNumberField("azimuth", "Azimuth (deg)", 0, 359, 1)}
+    ${isEq ? "" : makeMountNumberField("elevation", "Elevation (deg)", 0, 89, 1)}
   `;
 
   const syncMountFieldInputs = (field) => {
@@ -2864,6 +2860,17 @@ function wireButtons() {
         panel.classList.toggle("active", isActive);
         panel.hidden = !isActive;
       }
+      renderAll();
+    });
+  }
+
+  const settingsToggle = document.getElementById("toggle-settings");
+  const layoutEl = document.getElementById("main-layout");
+  if (settingsToggle && layoutEl) {
+    settingsToggle.addEventListener("click", () => {
+      const collapsed = layoutEl.classList.toggle("settings-collapsed");
+      settingsToggle.textContent = collapsed ? "Show Settings" : "Hide Settings";
+      settingsToggle.setAttribute("aria-expanded", String(!collapsed));
       renderAll();
     });
   }
