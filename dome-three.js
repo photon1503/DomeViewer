@@ -28,34 +28,45 @@ function clearGroup(group) {
   while (group.children.length) group.remove(group.children[0]);
 }
 
-function filterGeometryTriangles(geometry, keepTriangle) {
-  const source = geometry.index ? geometry.index.array : null;
-  const pos = geometry.attributes.position.array;
-  const triCount = source ? source.length / 3 : pos.length / 9;
-  const nextIndex = [];
+function applyExactSphereNormals(geometry, radius) {
+  const positionAttr = geometry.attributes.position;
+  const normals = new Float32Array(positionAttr.count * 3);
+  for (let i = 0; i < positionAttr.count; i += 1) {
+    normals[i * 3] = positionAttr.getX(i) / radius;
+    normals[i * 3 + 1] = positionAttr.getY(i) / radius;
+    normals[i * 3 + 2] = positionAttr.getZ(i) / radius;
+  }
+  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+}
 
-  const readPoint = (idx) => {
-    const base = idx * 3;
-    return new THREE.Vector3(pos[base], pos[base + 1], pos[base + 2]);
-  };
+function createSphericalBandPatch(radius, yStart, yEnd, phiRangeForRing, ySegments, phiSegments) {
+  const positions = [];
+  const indices = [];
 
-  for (let t = 0; t < triCount; t += 1) {
-    const ia = source ? source[t * 3] : t * 3;
-    const ib = source ? source[t * 3 + 1] : t * 3 + 1;
-    const ic = source ? source[t * 3 + 2] : t * 3 + 2;
-    const a = readPoint(ia);
-    const b = readPoint(ib);
-    const c = readPoint(ic);
-    const centroid = new THREE.Vector3().add(a).add(b).add(c).multiplyScalar(1 / 3);
-    if (keepTriangle(a, b, c, centroid)) {
-      nextIndex.push(ia, ib, ic);
+  for (let i = 0; i <= ySegments; i += 1) {
+    const y = yStart + ((yEnd - yStart) * i) / ySegments;
+    const yClamped = Math.max(-radius * 0.99999, Math.min(radius * 0.99999, y));
+    const ringRadius = Math.sqrt(Math.max(1e-10, radius * radius - yClamped * yClamped));
+    const [phiStart, phiEnd] = phiRangeForRing(ringRadius);
+    for (let j = 0; j <= phiSegments; j += 1) {
+      const phi = phiStart + ((phiEnd - phiStart) * j) / phiSegments;
+      positions.push(ringRadius * Math.cos(phi), yClamped, ringRadius * Math.sin(phi));
     }
   }
 
-  const filtered = geometry.clone();
-  filtered.setIndex(nextIndex);
-  filtered.computeVertexNormals();
-  return filtered;
+  for (let i = 0; i < ySegments; i += 1) {
+    for (let j = 0; j < phiSegments; j += 1) {
+      const a = i * (phiSegments + 1) + j;
+      const b = a + phiSegments + 1;
+      indices.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  applyExactSphereNormals(geometry, radius);
+  return geometry;
 }
 
 function addDomeGeometry(group, config) {
@@ -92,26 +103,94 @@ function addDomeGeometry(group, config) {
   group.add(slitAssembly);
 
   const openBottomZ = radius * 0.02;
-  const desiredTopZ = Math.sin(maxSlitOpenRad) * radius;
-  const openTopZ = Math.min(radius * 0.97, Math.max(openBottomZ + radius * 0.08, desiredTopZ));
+  const halfW = Math.min(slitWidth * 0.5, radius * 0.92);
+  const bandMinRing = Math.sqrt(Math.max(0, radius * radius - halfW * halfW));
+  // The slit cutout runs from a straight front edge up over the zenith and
+  // down to a straight back edge, so the zenith itself is inside the slit.
+  // The vertical limit only constrains how far the shutter is allowed to open.
+  const backTopZ = Math.min(radius * 0.97, bandMinRing * 0.985);
 
-  // Build a hemisphere cap and remove triangles whose centroids fall inside
-  // a rectangular slit band on the forward side. This avoids CSG robustness issues.
-  const capBaseGeometry = new THREE.SphereGeometry(radius, 128, 96, 0, Math.PI * 2, 0, Math.PI * 0.5);
-  capBaseGeometry.rotateX(Math.PI * 0.5);
+  // Build the dome shell from clean spherical patches so the slit cutout has
+  // straight vertical sides and straight front/back edges.
+  const phiFull = () => [0, Math.PI];
+  const phiBelowSlit = (ringRadius) => [0, Math.asin(Math.min(1, openBottomZ / ringRadius))];
+  const phiBehindSlit = (ringRadius) => [Math.PI - Math.asin(Math.min(1, backTopZ / ringRadius)), Math.PI];
 
-  const halfW = slitWidth * 0.5;
-  const xGate = radius * 0.08;
-  const capGeometry = filterGeometryTriangles(capBaseGeometry, (_a, _b, _c, centroid) => {
-    const inRectY = centroid.y >= -halfW && centroid.y <= halfW;
-    const inRectZ = centroid.z >= openBottomZ && centroid.z <= openTopZ;
-    const inForwardBand = centroid.x >= xGate;
-    return !(inRectY && inRectZ && inForwardBand);
+  const shellPatches = [
+    createSphericalBandPatch(radius, -radius, -halfW, phiFull, 48, 96),
+    createSphericalBandPatch(radius, halfW, radius, phiFull, 48, 96),
+    createSphericalBandPatch(radius, -halfW, halfW, phiBelowSlit, 12, 8),
+    createSphericalBandPatch(radius, -halfW, halfW, phiBehindSlit, 24, 32)
+  ];
+  for (const patchGeometry of shellPatches) {
+    slitAssembly.add(new THREE.Mesh(patchGeometry, shellMat));
+  }
+
+  // Real modelled shutter: a curved panel spanning the slit from the straight
+  // front edge over the crest to the straight back edge. It slides backward
+  // over the dome to open.
+  const shutterOpenPctRaw = Number(config.shutterOpenPct);
+  const shutterOpenFraction = Math.min(1, Math.max(0, (Number.isFinite(shutterOpenPctRaw) ? shutterOpenPctRaw : 100) / 100));
+  const shutterRadius = radius * 1.018;
+  const shutterHalfW = Math.min(halfW + radius * 0.035, radius * 0.96);
+  const shutterZBot = Math.max(radius * 0.012, openBottomZ - radius * 0.015);
+  const shutterBackZ = Math.max(radius * 0.012, backTopZ - radius * 0.03);
+
+  const shutterMat = new THREE.MeshPhysicalMaterial({
+    color: "#93a9c4",
+    roughness: 0.3,
+    metalness: 0.55,
+    transparent: domeOpacity < 0.999,
+    opacity: Math.min(1, domeOpacity + 0.15),
+    side: THREE.DoubleSide,
+    clearcoat: 0.4,
+    clearcoatRoughness: 0.3
   });
 
-  const capMesh = new THREE.Mesh(capGeometry, shellMat);
-  capMesh.material = shellMat;
-  slitAssembly.add(capMesh);
+  const shutterPhiRange = (ringRadius) => [
+    Math.asin(Math.min(1, shutterZBot / ringRadius)),
+    Math.PI - Math.asin(Math.min(1, shutterBackZ / ringRadius))
+  ];
+  const shutterMesh = new THREE.Mesh(
+    createSphericalBandPatch(shutterRadius, -shutterHalfW, shutterHalfW, shutterPhiRange, 20, 72),
+    shutterMat
+  );
+  // The shutter vertical limit caps the opening travel: at 100% open the
+  // shutter front edge reaches the configured elevation limit.
+  const shutterBottomEdgeRad = Math.asin(Math.min(1, shutterZBot / shutterRadius));
+  const shutterTravelRad = Math.max(0.02, maxSlitOpenRad - shutterBottomEdgeRad);
+  shutterMesh.rotation.y = -shutterOpenFraction * shutterTravelRad;
+  slitAssembly.add(shutterMesh);
+
+  // Static guide rails on both sides of the slit, running over the crest to
+  // the back of the dome so the shutter stays on its track when open.
+  const railMat = new THREE.MeshPhysicalMaterial({
+    color: "#5a6c85",
+    roughness: 0.42,
+    metalness: 0.6,
+    transparent: domeOpacity < 0.999,
+    opacity: Math.min(1, domeOpacity + 0.2),
+    side: THREE.DoubleSide
+  });
+  const railRadius = radius * 1.028;
+  const railWidth = radius * 0.028;
+  const railPhiRange = (ringRadius) => [
+    Math.asin(Math.min(1, shutterZBot / ringRadius)),
+    Math.PI * 0.97
+  ];
+  for (const sideSign of [-1, 1]) {
+    const railInnerY = sideSign * shutterHalfW;
+    const railOuterY = sideSign * (shutterHalfW + railWidth);
+    const railGeometry = createSphericalBandPatch(
+      railRadius,
+      Math.min(railInnerY, railOuterY),
+      Math.max(railInnerY, railOuterY),
+      railPhiRange,
+      4,
+      72
+    );
+    slitAssembly.add(new THREE.Mesh(railGeometry, railMat));
+  }
 
   const wall = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, wallHeight, 72, 1, true), wallMat);
   wall.rotation.x = Math.PI * 0.5;

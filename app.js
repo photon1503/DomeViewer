@@ -19,6 +19,7 @@ const state = {
   domeAccelDegPerSec2: 4,
   domeDecelDegPerSec2: 5,
   domeSettleTimeSec: 0.6,
+  shutterOpenPct: 100,
   sideViewRotationDeg: 0,
   showLaserLine: true,
   mountViewMode: "PROCEDURAL",
@@ -68,7 +69,7 @@ const globalControls = [
   { key: "domeRadiusMm", label: "Dome Radius (mm)", min: 500, max: 12000, step: 10 },
   { key: "slitWidthMm", label: "Slit Width (mm)", min: 100, max: 20000, step: 10 },
   { key: "domeOpacity", label: "Dome Opacity (0-1)", min: 0.05, max: 1, step: 0.05 },
-  { key: "maxSlitOpeningDeg", label: "Shutter Vertical Limit (deg)", min: 5, max: 85, step: 1 },
+  { key: "maxSlitOpeningDeg", label: "Shutter Vertical Limit (deg)", min: 5, max: 90, step: 1 },
   { key: "slitWallHeightMm", label: "Slit Wall Height (mm)", min: 300, max: 12000, step: 10 },
   { key: "azToleranceDeg", label: "Azimuth Tolerance (deg)", min: 0, max: 30, step: 1 },
   { key: "latitudeDeg", label: "Latitude (deg)", min: -89, max: 89, step: 0.1 },
@@ -77,6 +78,7 @@ const globalControls = [
 
 const domeSimControls = [
   { key: "domeAzimuthDeg", label: "Dome Azimuth (deg)", min: 0, max: 359, step: 1 },
+  { key: "shutterOpenPct", label: "Shutter Open (%)", min: 0, max: 100, step: 1 },
   { key: "domeSlewSpeedDegPerSec", label: "Dome Slew Speed (deg/s)", min: 0.2, max: 40, step: 0.1 },
   { key: "domeAccelDegPerSec2", label: "Dome Accel (deg/s^2)", min: 0.2, max: 100, step: 0.1 },
   { key: "domeDecelDegPerSec2", label: "Dome Decel (deg/s^2)", min: 0.2, max: 100, step: 0.1 },
@@ -1928,6 +1930,7 @@ function getDomeViewConfig() {
     domeOpacity: clamp(Number(state.domeOpacity), 0.05, 1),
     slitWallHeightMm: Number(state.slitWallHeightMm) || Number(state.domeRadiusMm) || 1500,
     maxSlitOpeningDeg: Number(state.maxSlitOpeningDeg) || 85,
+    shutterOpenPct: clamp(Number(state.shutterOpenPct) || 0, 0, 100),
     effectiveSlitWidthMm: getEffectiveSlitWidthMm(),
     sideViewRotationDeg: Number(state.sideViewRotationDeg) || 0,
     showLaserLine: Boolean(state.showLaserLine),
@@ -2236,11 +2239,57 @@ function renderAll() {
     runtime.settleUntilMs = 0;
   }
 
+  syncShutterControls();
   drawDomeViews();
   drawMountView();
   drawHorizonView();
   drawDiagnostics();
   ensureDomeAnimation();
+}
+
+function renderDomeViewControls() {
+  const host = document.getElementById("dome-view-controls");
+  if (!host) return;
+  host.innerHTML = "";
+
+  const shutterSliderField = document.createElement("div");
+  shutterSliderField.className = "field";
+  const shutterSliderLabel = document.createElement("label");
+  shutterSliderLabel.setAttribute("for", "shutter-open-slider");
+  shutterSliderLabel.textContent = `Shutter Position (${Math.round(state.shutterOpenPct)}% open)`;
+  const shutterSlider = document.createElement("input");
+  shutterSlider.id = "shutter-open-slider";
+  shutterSlider.type = "range";
+  shutterSlider.min = "0";
+  shutterSlider.max = "100";
+  shutterSlider.step = "1";
+  shutterSlider.value = String(clamp(Number(state.shutterOpenPct) || 0, 0, 100));
+  shutterSlider.addEventListener("input", () => {
+    state.shutterOpenPct = clamp(Number(shutterSlider.value), 0, 100);
+    syncShutterControls();
+    renderAll();
+  });
+  shutterSliderField.append(shutterSliderLabel, shutterSlider);
+  host.appendChild(shutterSliderField);
+}
+
+function syncShutterControls() {
+  const shutterValue = clamp(Number(state.shutterOpenPct) || 0, 0, 100);
+
+  const shutterSlider = document.getElementById("shutter-open-slider");
+  if (shutterSlider && shutterSlider !== document.activeElement) {
+    shutterSlider.value = String(shutterValue);
+  }
+
+  const shutterSliderLabel = document.querySelector('label[for="shutter-open-slider"]');
+  if (shutterSliderLabel) {
+    shutterSliderLabel.textContent = `Shutter Position (${Math.round(shutterValue)}% open)`;
+  }
+
+  const shutterNumeric = document.getElementById("shutterOpenPct");
+  if (shutterNumeric && shutterNumeric !== document.activeElement) {
+    shutterNumeric.value = String(shutterValue);
+  }
 }
 
 function makeNumberField(scope, key, label, min, max, step) {
@@ -2935,6 +2984,7 @@ function wireButtons() {
 
 function init() {
   runtime.currentDomeAzimuthDeg = getDomeTargetAzimuthDeg();
+  renderDomeViewControls();
   renderGlobalControls();
   renderDomeSimControls();
   renderMountControls();
