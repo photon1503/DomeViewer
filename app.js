@@ -330,7 +330,7 @@ function trackTelescopeFrame(tsMs) {
   runtime.trackingFlipToPierSide = null;
   runtime.trackingLastPierSide = nextPierSide;
   scope.hourAngleDeg = nextHourAngleDeg;
-  scope.pierSideMode = "AUTO";
+  scope.pierSideMode = "MANUAL";
   scope.pierSide = nextPierSide;
 
   renderScopeCards();
@@ -385,7 +385,8 @@ function startTrackingTelescope(scopeId) {
   runtime.trackingOriginalPierSideMode = scope.pierSideMode;
   runtime.trackingOriginalPierSide = scope.pierSide;
   runtime.trackingLastPierSide = startHaDeg < 0 ? "WEST" : "EAST";
-  scope.pierSideMode = "AUTO";
+  scope.pierSideMode = "MANUAL";
+  scope.pierSide = runtime.trackingLastPierSide;
   scope.hourAngleDeg = runtime.trackingStartHaDeg;
   renderMountTrackingPanel();
   runtime.trackingRafId = requestAnimationFrame(trackTelescopeFrame);

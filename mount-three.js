@@ -199,9 +199,13 @@ function buildEqScene(root, config, importedAsset) {
   haGroup.rotation.y = -hourAngleRad;
   headGroup.add(haGroup);
 
+  const flipGroup = new THREE.Group();
+  flipGroup.rotation.y = getEqPierSide(mount) === "EAST" ? Math.PI : 0;
+  haGroup.add(flipGroup);
+
   const decRotGroup = new THREE.Group();
   decRotGroup.rotation.x = -decMechanicalRad;
-  haGroup.add(decRotGroup);
+  flipGroup.add(decRotGroup);
 
   const pierMat = createPhysicalMaterial("#d9e1ec", 0.2, 0.18);
   const darkMat = createPhysicalMaterial("#34373f", 0.58, 0.42);
