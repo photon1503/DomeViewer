@@ -88,7 +88,6 @@ function createScope(idx) {
     id: idx,
     name: idx === 1 ? "RC Truss OTA" : `Telescope ${idx}`,
     otaLayout: idx === 1 ? "PRIMARY" : "SIDE_BY_SIDE",
-    otaSideOffsetMm: idx === 1 ? 0 : 320,
     otaPiggybackOffsetMm: idx === 1 ? 0 : 180,
     mountType: "EQ",
     posNS: 80,
@@ -199,12 +198,14 @@ function getMountScope() {
 
 function getOtaOffset(scope, optical, sideDir) {
   const layout = scope.otaLayout ?? "PRIMARY";
-  const sideOffset = layout === "PRIMARY" ? 0 : Number(scope.otaSideOffsetMm) || 0;
+  const sideOffset = Number(scope.lateralAxisLength) || 0;
   const piggybackHeight = layout === "PIGGYBACK" ? Number(scope.otaPiggybackOffsetMm) || 0 : 0;
+  const lateralDir = v3Norm(v3Cross(optical, sideDir));
+  const safeLateralDir = Math.hypot(lateralDir.x, lateralDir.y, lateralDir.z) < 1e-6 ? sideDir : lateralDir;
   let piggybackDir = v3Norm(v3Cross(optical, sideDir));
   if (Math.hypot(piggybackDir.x, piggybackDir.y, piggybackDir.z) < 1e-6) piggybackDir = v3(0, 0, 1);
   if (v3Dot(piggybackDir, v3(0, 0, 1)) < 0) piggybackDir = v3Scale(piggybackDir, -1);
-  return v3Add(v3Scale(sideDir, sideOffset), v3Scale(piggybackDir, piggybackHeight));
+  return v3Add(v3Scale(safeLateralDir, sideOffset), v3Scale(piggybackDir, piggybackHeight));
 }
 
 function getMountAxisPoint(scope = getMountScope()) {
@@ -814,8 +815,10 @@ function getEqMountGeometry(scope) {
   const wedgeFront = v3Add(mount, v3Scale(raUnit, -92));
   const raShoulder = v3Add(mount, v3Scale(raUnit, -146));
   const raHead = mount;
-  const gemAxisLength = Math.max(70, Number(scope.gemAxisLength) || 435);
+  const ownGemAxisLength = Math.max(0, Number(scope.gemAxisLength) || 0);
   const lateralAxisLength = Number(scope.lateralAxisLength) || 0;
+  const isSideBySideSecondary = scope !== mountScope && scope.otaLayout === "SIDE_BY_SIDE";
+  const gemAxisLength = ownGemAxisLength;
   const sideDir = v3Scale(decUnit, pierSideSign);
   const decHousingHalfLen = Math.min(185, Math.max(120, gemAxisLength * 0.22));
   const decScopeEnd = v3Add(raHead, v3Scale(sideDir, decHousingHalfLen));
@@ -826,13 +829,26 @@ function getEqMountGeometry(scope) {
   if (Math.hypot(saddleNormal.x, saddleNormal.y, saddleNormal.z) < 1e-6) saddleNormal = v3Norm(v3Add(up, v3Scale(sideDir, -v3Dot(up, sideDir))));
   if (Math.hypot(saddleNormal.x, saddleNormal.y, saddleNormal.z) < 1e-6) saddleNormal = up;
   if (v3Dot(saddleNormal, up) < 0) saddleNormal = v3Scale(saddleNormal, -1);
-  const saddleLift = Math.min(95, Math.max(28, gemAxisLength * 0.14));
-  const lateralOffset = scope.otaLayout === "SIDE_BY_SIDE" ? lateralAxisLength : 0;
-  const otaOffset = v3Add(getOtaOffset(scope, optical, sideDir), v3Scale(sideDir, lateralOffset));
-  const saddle = v3Add(v3Add(decScopeEnd, v3Scale(saddleNormal, saddleLift)), otaOffset);
-  const tubeCenterAtSaddle = v3Add(saddle, v3Scale(saddleNormal, tubeRadius + Math.max(14, tubeRadius * 0.22)));
-  const tubeBack = v3Add(tubeCenterAtSaddle, v3Scale(optical, -tubeLen / 3));
-  const tubeFront = v3Add(tubeCenterAtSaddle, v3Scale(optical, tubeLen * (2 / 3)));
+  const enforceGemAxis = scope === mountScope;
+  const baseSaddleLift = Math.max(28, gemAxisLength * 0.14);
+  const axisCompLift = Math.max(0, (gemAxisLength - 220) * 0.22);
+  const saddleLift = Math.min(420, baseSaddleLift + axisCompLift);
+  const otaOffset = getOtaOffset(scope, optical, sideDir);
+  const rawSaddle = v3Add(v3Add(decScopeEnd, v3Scale(saddleNormal, saddleLift)), otaOffset);
+  const rawTubeCenterAtSaddle = v3Add(rawSaddle, v3Scale(saddleNormal, tubeRadius + Math.max(14, tubeRadius * 0.22)));
+  const rawTubeBack = v3Add(rawTubeCenterAtSaddle, v3Scale(optical, -tubeLen / 3));
+  const rawTubeFront = v3Add(rawTubeCenterAtSaddle, v3Scale(optical, tubeLen * (2 / 3)));
+
+  // GEM axis length defines the lateral offset from mount axis to aperture center.
+  const currentApertureOffsetMm = v3Dot(v3Add(rawTubeFront, v3Scale(raHead, -1)), sideDir);
+  const desiredApertureOffsetMm = enforceGemAxis || isSideBySideSecondary
+    ? gemAxisLength
+    : currentApertureOffsetMm;
+  const gemAxisShift = v3Scale(sideDir, desiredApertureOffsetMm - currentApertureOffsetMm);
+
+  const saddle = v3Add(rawSaddle, gemAxisShift);
+  const tubeBack = v3Add(rawTubeBack, gemAxisShift);
+  const tubeFront = v3Add(rawTubeFront, gemAxisShift);
   const saddleBack = saddle;
   const saddlePlateHalfLen = Math.min(220, Math.max(90, tubeLen * 0.18));
   const saddlePlateBack = v3Add(saddle, v3Scale(optical, -saddlePlateHalfLen));
@@ -1913,7 +1929,6 @@ function getMountViewConfig() {
       id: scope.id,
       name: scope.name,
       otaLayout: scope.otaLayout,
-      otaSideOffsetMm: Number(scope.otaSideOffsetMm) || 0,
       otaPiggybackOffsetMm: Number(scope.otaPiggybackOffsetMm) || 0,
       gemAxisLength: Number(scope.gemAxisLength) || 435,
       lateralAxisLength: Number(scope.lateralAxisLength) || 0,
@@ -2450,13 +2465,12 @@ function renderScopeCards() {
     const mountControls = isMountOwner
       ? `
         ${isEq ? makeNumberField(scope, "gemAxisLength", "GEM Axis Length (mm)", 0, 5000, 10) : ""}
-        ${isEq ? makeNumberField(scope, "lateralAxisLength", "Lateral Axis Length (mm)", 0, 5000, 10) : ""}
+        ${isEq ? makeNumberField(scope, "lateralAxisLength", "Lateral Axis Length (mm)", -5000, 5000, 10) : ""}
       `
       : `
         ${makeSelectField(scope, "otaLayout", "OTA Layout", ["SIDE_BY_SIDE", "PIGGYBACK"])}
         ${isEq ? makeNumberField(scope, "gemAxisLength", "GEM Axis Length (mm)", 0, 5000, 10) : ""}
-        ${isEq ? makeNumberField(scope, "lateralAxisLength", "Lateral Axis Length (mm)", 0, 5000, 10) : ""}
-        ${makeNumberField(scope, "otaSideOffsetMm", "Side Offset (mm)", -2000, 2000, 10)}
+        ${isEq ? makeNumberField(scope, "lateralAxisLength", "Lateral Axis Length (mm)", -5000, 5000, 10) : ""}
         ${makeNumberField(scope, "otaPiggybackOffsetMm", "Piggyback Height (mm)", 0, 2000, 10)}
       `;
     card.innerHTML = `
@@ -2470,7 +2484,7 @@ function renderScopeCards() {
           ? isEq
             ? `Shared EQ mount: HA ${normalizeSignedDeg(mountConfig.hourAngleDeg).toFixed(0)} deg, Dec ${mountConfig.declinationDeg.toFixed(0)} deg, Pier ${getEqPierSide(scope)}, derived Az ${pointing.azimuthDeg.toFixed(0)} deg, El ${pointing.elevationDeg.toFixed(0)} deg`
             : `Shared AZ mount: Az ${pointing.azimuthDeg.toFixed(0)} deg, El ${pointing.elevationDeg.toFixed(0)} deg`
-          : `Secondary OTA: ${scope.otaLayout === "PIGGYBACK" ? "piggyback" : "side-by-side"}, side ${Number(scope.otaSideOffsetMm || 0).toFixed(0)} mm, piggyback ${Number(scope.otaPiggybackOffsetMm || 0).toFixed(0)} mm`}
+          : `Secondary OTA: ${scope.otaLayout === "PIGGYBACK" ? "piggyback" : "side-by-side"}, lateral ${Number(scope.lateralAxisLength || 0).toFixed(0)} mm, piggyback ${Number(scope.otaPiggybackOffsetMm || 0).toFixed(0)} mm`}
       </p>
 
       <div class="scope-grid">
@@ -2751,7 +2765,7 @@ function wireButtons() {
   addBtn.addEventListener("click", () => {
     const ota = createScope(nextScopeId);
     ota.otaLayout = "SIDE_BY_SIDE";
-    ota.otaSideOffsetMm = 320 * (state.telescopes.length % 2 === 0 ? -1 : 1);
+    ota.lateralAxisLength = 320 * (state.telescopes.length % 2 === 0 ? -1 : 1);
     ota.otaPiggybackOffsetMm = 180;
     state.telescopes.push(ota);
     state.followScopeId = state.followScopeId || nextScopeId;

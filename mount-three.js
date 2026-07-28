@@ -311,7 +311,6 @@ function buildEqScene(root, config, importedAsset) {
   decRearCap.position.x = (-decHousingHalfLen + 16) * MM;
   decRotGroup.add(decRearCap);
 
-  const scopeEndX = (decHousingHalfLen + 180) * pierSideSign;
   const counterEndDir = -pierSideSign;
 
   const cwLen = Math.max(120, Number(mount.counterweightShaftLengthMm) || 820);
@@ -338,40 +337,52 @@ function buildEqScene(root, config, importedAsset) {
   const piggyDir = getPiggybackDir(optical, sideDir);
   const otaRayCandidates = [];
 
+  const maxAbsLateralOffsetMm = config.scopes.reduce(
+    (max, scope) => Math.max(max, Math.abs(Number(scope.lateralAxisLength) || 0)),
+    0
+  );
+  const decSaddleWidthMm = Math.min(1400, Math.max(168, maxAbsLateralOffsetMm * 2 + 160));
+  const decSaddleHeightMm = 74;
+  const decAxisSaddlePos = new THREE.Vector3(decHousingHalfLen * pierSideSign * MM, 0, 16 * MM);
+  // Keep saddle plate normal aligned with local +X (DEC axis).
+  const decAxisSaddle = makeBox(26, decSaddleWidthMm, decSaddleHeightMm, createPhysicalMaterial("#252a33", 0.5, 0.34));
+  decAxisSaddle.position.copy(decAxisSaddlePos);
+  decRotGroup.add(decAxisSaddle);
+  const decSaddleTopZ = decAxisSaddlePos.z + decSaddleHeightMm * 0.5 * MM;
+
   config.scopes.forEach((scope, index) => {
-    const gemAxisLength = Math.max(70, Number(scope.gemAxisLength) || 435);
-    const saddleLift = Math.min(88, Math.max(42, gemAxisLength * 0.12));
+    const ownGemAxisLength = Math.max(0, Number(scope.gemAxisLength) || 0);
+    const gemAxisLength = ownGemAxisLength;
+    const baseSaddleLift = Math.max(42, gemAxisLength * 0.12);
+    const axisCompLift = Math.max(0, (gemAxisLength - 220) * 0.24);
+    const saddleLift = Math.min(420, baseSaddleLift + axisCompLift);
     const lateralAxisLength = Number(scope.lateralAxisLength) || 0;
-    const sideOffsetMm = scope.otaLayout === "SIDE_BY_SIDE" ? lateralAxisLength + (Number(scope.otaSideOffsetMm) || 0) : 0;
+    const sideOffsetMm = lateralAxisLength;
     const piggyOffsetMm = scope.otaLayout === "PIGGYBACK" ? Number(scope.otaPiggybackOffsetMm) || 0 : 0;
     const tubeLen = Math.max(120, Number(scope.tubeLengthMm) || 760);
     const tubeRadius = Math.max(24, (Number(scope.telescopeDiameterMm) || 120) * 0.5);
-    const scopeGroup = new THREE.Group();
-    scopeGroup.position.set(
-      (scopeEndX + sideOffsetMm * pierSideSign) * MM,
-      0,
+
+    const saddleAxisOffsetMm = gemAxisLength * pierSideSign;
+    const saddleLateralOffsetMm = sideOffsetMm * pierSideSign;
+    const otaAttachPos = new THREE.Vector3(
+      saddleAxisOffsetMm * MM,
+      saddleLateralOffsetMm * MM,
       (saddleLift + piggyOffsetMm) * MM
     );
+
+    const riserBasePos = new THREE.Vector3(otaAttachPos.x, otaAttachPos.y, decSaddleTopZ);
+    const riserGapMm = Math.abs(otaAttachPos.z - decSaddleTopZ) / MM;
+    if (riserGapMm > 24) {
+      const riser = addRodBetween(decRotGroup, riserBasePos, otaAttachPos, 17, createPhysicalMaterial("#262b34", 0.52, 0.32));
+      if (riser) riser.material = createPhysicalMaterial("#262b34", 0.52, 0.32);
+    }
+
+    const scopeGroup = new THREE.Group();
+    scopeGroup.position.copy(otaAttachPos);
     decRotGroup.add(scopeGroup);
 
-    const support = makeBox(72, 42, Math.max(40, saddleLift), darkerMat);
-    support.position.set(0, 0, -Math.max(40, saddleLift) * 0.5 * MM + 4 * MM);
-    scopeGroup.add(support);
-
-    const saddle = makeBox(186, 78, 34, createPhysicalMaterial("#20242b", 0.52, 0.38));
-    saddle.position.z = 12 * MM;
-    scopeGroup.add(saddle);
-
-    const saddleTower = makeBox(62, 48, 54, createPhysicalMaterial("#272b32", 0.48, 0.34));
-    saddleTower.position.z = 20 * MM;
-    scopeGroup.add(saddleTower);
-
-    const dovetail = makeBox(138, 46, 16, createPhysicalMaterial("#434953", 0.34, 0.26));
-    dovetail.position.z = 38 * MM;
-    scopeGroup.add(dovetail);
-
     const otaMount = new THREE.Group();
-    otaMount.position.set(0, 0, 42 * MM);
+    otaMount.position.set(0, 0, 0);
     scopeGroup.add(otaMount);
 
     const tubeLenMm = Math.max(680, tubeLen);
