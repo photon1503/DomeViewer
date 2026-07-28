@@ -303,7 +303,8 @@ button {
 }
 
 .dome-canvas,
-.mount-canvas {
+.mount-canvas,
+.horizon-canvas {
   width: 100%;
   border-radius: 10px;
   background:
@@ -331,6 +332,11 @@ button {
   aspect-ratio: 640 / 420;
   cursor: grab;
   touch-action: none;
+}
+
+.horizon-canvas {
+  display: block;
+  aspect-ratio: 960 / 700;
 }
 
 .mount-canvas:active {

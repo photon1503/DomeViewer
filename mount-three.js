@@ -548,6 +548,11 @@ function frameObject(camera, controls, object, direction, padding = 1.28) {
 }
 
 export function buildMountIntoGroup(root, config, importedAsset = null) {
+  const posEW = Number(config?.mount?.posEW) || 0;
+  const posNS = Number(config?.mount?.posNS) || 0;
+  const posUD = Number(config?.mount?.posUD) || 0;
+  root.position.set(posEW * MM, posNS * MM, posUD * MM);
+
   if (config.mount.mountType === "EQ") {
     buildEqScene(root, config, importedAsset);
   } else {
@@ -599,6 +604,8 @@ export function createMountThreeView({ canvas, statusEl }) {
   let objectUrl = null;
   let latestConfig = null;
   let animationFrameId = null;
+  let shouldFrameOnUpdate = true;
+  let lastFrameSignature = "";
 
   function setStatus(message) {
     if (statusEl) statusEl.textContent = message;
@@ -617,9 +624,11 @@ export function createMountThreeView({ canvas, statusEl }) {
   function resetView() {
     if (root.children.length > 0) {
       frameObject(camera, controls, root, defaultViewDirection, 1.35);
+      shouldFrameOnUpdate = false;
     } else {
       camera.position.set(-2.95, 2.3, 0.72);
       controls.target.set(0.0, -0.06, -0.34);
+      shouldFrameOnUpdate = true;
     }
     controls.update();
     render();
@@ -663,13 +672,20 @@ export function createMountThreeView({ canvas, statusEl }) {
   }
 
   function update(config) {
+    const frameSignature = `${config.mount.mountType}|${config.mountViewMode}`;
+    const needsAutoFrame = shouldFrameOnUpdate || frameSignature !== lastFrameSignature;
+
     latestConfig = config;
     clearRoot();
     const mountRoot = new THREE.Group();
     root.add(mountRoot);
     buildMountIntoGroup(mountRoot, config, config.mountViewMode === "GLB" ? importedAsset : null);
 
-    frameObject(camera, controls, mountRoot, defaultViewDirection, config.mount.mountType === "EQ" ? 1.32 : 1.24);
+    if (needsAutoFrame) {
+      frameObject(camera, controls, mountRoot, defaultViewDirection, config.mount.mountType === "EQ" ? 1.32 : 1.24);
+      shouldFrameOnUpdate = false;
+    }
+    lastFrameSignature = frameSignature;
 
     const modeLabel = config.mountViewMode === "GLB"
       ? importedAsset

@@ -36,6 +36,7 @@ const runtime = {
   trackingScopeId: null,
   trackingStartTsMs: 0,
   trackingDurationMs: 9000,
+  trackingActiveDurationMs: 9000,
   trackingStartHaDeg: 0,
   trackingEndHaDeg: 0,
   trackingPauseUntilMs: 0,
@@ -56,7 +57,9 @@ const runtime = {
   mountViewPitchDeg: 18,
   mountViewDragging: false,
   mountViewLastX: 0,
-  mountViewLastY: 0
+  mountViewLastY: 0,
+  horizonCacheKey: "",
+  horizonReachableSamples: []
 };
 
 let nextScopeId = 2;
@@ -210,6 +213,14 @@ function getMountAxisPoint(scope = getMountScope()) {
   return v3(mountScope.posEW, mountScope.posNS, state.domeRadiusMm + mountScope.posUD);
 }
 
+function getBaseObstructionMinElevationDeg(originZMm) {
+  const domeRadius = Math.max(1, Number(state.domeRadiusMm) || 1500);
+  const wallTop = clamp(Number(state.slitWallHeightMm) || domeRadius, 0, domeRadius);
+  const rise = wallTop - (Number(originZMm) || 0);
+  if (rise <= 0) return 0;
+  return (Math.atan2(rise, domeRadius) * 180) / Math.PI;
+}
+
 function getEqPierSide(scope) {
   const mountScope = getMountScope() ?? scope;
   if (mountScope.mountType !== "EQ") return null;
@@ -278,6 +289,7 @@ function stopTrackingTelescope(resetId = null) {
   runtime.trackingStartTsMs = 0;
   runtime.trackingStartHaDeg = 0;
   runtime.trackingEndHaDeg = 0;
+  runtime.trackingActiveDurationMs = runtime.trackingDurationMs;
   runtime.trackingPauseUntilMs = 0;
   runtime.trackingLastPierSide = null;
   runtime.trackingOriginalPierSideMode = null;
@@ -301,9 +313,12 @@ function trackTelescopeFrame(tsMs) {
 
   if (!runtime.trackingStartTsMs) runtime.trackingStartTsMs = tsMs;
   const elapsed = tsMs - runtime.trackingStartTsMs;
-  const progress = clamp(elapsed / runtime.trackingDurationMs, 0, 1);
-  const nextHourAngleDeg = normalizeSignedDeg(
-    runtime.trackingStartHaDeg + (runtime.trackingEndHaDeg - runtime.trackingStartHaDeg) * progress
+  const activeDurationMs = Math.max(250, Number(runtime.trackingActiveDurationMs) || runtime.trackingDurationMs);
+  const progress = clamp(elapsed / activeDurationMs, 0, 1);
+  const nextHourAngleDeg = clamp(
+    runtime.trackingStartHaDeg + (runtime.trackingEndHaDeg - runtime.trackingStartHaDeg) * progress,
+    -179.5,
+    179.5
   );
   const nextPierSide = nextHourAngleDeg < 0 ? "WEST" : "EAST";
 
@@ -359,8 +374,16 @@ function startTrackingTelescope(scopeId) {
 
   stopTrackingTelescope();
 
-  const hourLimitDeg = getEqTrackingHourAngleLimitDeg(scope);
+  const hourLimitDeg = Math.min(179.5, getEqTrackingHourAngleLimitDeg(scope));
   if (hourLimitDeg <= 0.001) {
+    renderScopeCards();
+    renderAll();
+    return;
+  }
+
+  const currentHaDeg = clamp(normalizeSignedDeg(Number(scope.hourAngleDeg) || 0), -hourLimitDeg, hourLimitDeg);
+  const westLimitHaDeg = hourLimitDeg;
+  if (currentHaDeg >= westLimitHaDeg - 0.001) {
     renderScopeCards();
     renderAll();
     return;
@@ -368,8 +391,11 @@ function startTrackingTelescope(scopeId) {
 
   runtime.trackingScopeId = scopeId;
   runtime.trackingStartTsMs = 0;
-  runtime.trackingStartHaDeg = -hourLimitDeg;
-  runtime.trackingEndHaDeg = hourLimitDeg;
+  runtime.trackingStartHaDeg = currentHaDeg;
+  runtime.trackingEndHaDeg = westLimitHaDeg;
+  const fullSpanDeg = Math.max(1e-6, 2 * hourLimitDeg);
+  const runSpanDeg = Math.max(1e-6, runtime.trackingEndHaDeg - runtime.trackingStartHaDeg);
+  runtime.trackingActiveDurationMs = Math.max(500, runtime.trackingDurationMs * (runSpanDeg / fullSpanDeg));
   runtime.trackingPauseUntilMs = 0;
   runtime.trackingFlipStartTsMs = 0;
   runtime.trackingFlipProgress = 0;
@@ -377,9 +403,9 @@ function startTrackingTelescope(scopeId) {
   runtime.trackingFlipToPierSide = null;
   runtime.trackingOriginalPierSideMode = scope.pierSideMode;
   runtime.trackingOriginalPierSide = scope.pierSide;
-  runtime.trackingLastPierSide = "WEST";
+  runtime.trackingLastPierSide = currentHaDeg < 0 ? "WEST" : "EAST";
   scope.pierSideMode = "AUTO";
-  scope.hourAngleDeg = normalizeSignedDeg(runtime.trackingStartHaDeg);
+  scope.hourAngleDeg = runtime.trackingStartHaDeg;
   runtime.trackingRafId = requestAnimationFrame(trackTelescopeFrame);
 }
 
@@ -506,6 +532,16 @@ function isPointInsideSlit(point, domeAzimuthDeg, slitWidthMm, radiusMm, toleran
 function evaluateScopeSlitVisibility(scope) {
   const domeAz = getDomeAzimuthDeg();
   const pointing = getScopePointing(scope);
+  const mountOrigin = getMountAxisPoint(getMountScope() ?? scope);
+  const minElevationDeg = getBaseObstructionMinElevationDeg(mountOrigin.z);
+
+  if (pointing.elevationDeg < minElevationDeg - 1e-6) {
+    return {
+      clear: false,
+      reason: `Blocked: base wall obscures below ${minElevationDeg.toFixed(1)} deg`
+    };
+  }
+
   const hit = getScopeDomeHit(scope);
   const hitAz = hit ? getPointAzimuthDeg(hit) : normalizeHeading(pointing.azimuthDeg);
   const rel = signedDeltaDeg(hitAz, domeAz);
@@ -1301,6 +1337,279 @@ function renderSceneSide(svg, scene, sideRot, xToPx, zToPx, scale) {
   });
 }
 
+function getHorizonCacheKey() {
+  const mount = getMountScope();
+  return [
+    Number(state.domeRadiusMm) || 0,
+    Number(state.slitWidthMm) || 0,
+    Number(state.slitWallHeightMm) || 0,
+    Number(state.maxSlitOpeningDeg) || 0,
+    Number(state.azToleranceDeg) || 0,
+    Number(state.latitudeDeg) || 0,
+    String(mount?.mountType || "EQ"),
+    Number(mount?.posNS) || 0,
+    Number(mount?.posEW) || 0,
+    Number(mount?.posUD) || 0
+  ].join("|");
+}
+
+function isHorizonHitReachableForAnyDomeAz(hit, effectiveSlitWidthMm) {
+  for (let domeAz = 0; domeAz < 360; domeAz += 4) {
+    const inside = isPointInsideSlit(
+      hit,
+      domeAz,
+      effectiveSlitWidthMm,
+      state.domeRadiusMm,
+      state.azToleranceDeg,
+      state.maxSlitOpeningDeg
+    );
+    if (inside) return true;
+  }
+  return false;
+}
+
+function getReachableHorizonSamples() {
+  const cacheKey = getHorizonCacheKey();
+  if (runtime.horizonCacheKey === cacheKey && Array.isArray(runtime.horizonReachableSamples)) {
+    return runtime.horizonReachableSamples;
+  }
+
+  const mount = getMountScope();
+  if (!mount) {
+    runtime.horizonCacheKey = cacheKey;
+    runtime.horizonReachableSamples = [];
+    return runtime.horizonReachableSamples;
+  }
+
+  const origin = getMountAxisPoint(mount);
+  const minElevationDeg = getBaseObstructionMinElevationDeg(origin.z);
+  const effectiveSlitWidthMm = getEffectiveSlitWidthMm();
+  const azStepDeg = 4;
+  const elStepDeg = 2;
+  const samples = [];
+
+  for (let azDeg = 0; azDeg < 360; azDeg += azStepDeg) {
+    for (let elDeg = 0; elDeg < 90; elDeg += elStepDeg) {
+      const azCenterDeg = azDeg + azStepDeg * 0.5;
+      const elCenterDeg = elDeg + elStepDeg * 0.5;
+      if (elCenterDeg < minElevationDeg) continue;
+      const azRad = degToRad(azCenterDeg);
+      const elRad = degToRad(elCenterDeg);
+      const dir = v3Norm(v3(
+        Math.sin(azRad) * Math.cos(elRad),
+        Math.cos(azRad) * Math.cos(elRad),
+        Math.sin(elRad)
+      ));
+      const hit = intersectRayWithDome(origin, dir, state.domeRadiusMm);
+      if (!hit) continue;
+      if (!isHorizonHitReachableForAnyDomeAz(hit, effectiveSlitWidthMm)) continue;
+      samples.push({ azDeg, elDeg, azStepDeg, elStepDeg });
+    }
+  }
+
+  runtime.horizonCacheKey = cacheKey;
+  runtime.horizonReachableSamples = samples;
+  return samples;
+}
+
+function drawHorizonView() {
+  const canvas = document.getElementById("horizon-view");
+  if (!canvas) return;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const cssWidth = Math.max(1, Math.round(rect.width));
+  const cssHeight = Math.max(1, Math.round(rect.height));
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const drawWidth = Math.max(1, Math.round(cssWidth * dpr));
+  const drawHeight = Math.max(1, Math.round(cssHeight * dpr));
+
+  if (canvas.width !== drawWidth || canvas.height !== drawHeight) {
+    canvas.width = drawWidth;
+    canvas.height = drawHeight;
+  }
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, drawWidth, drawHeight);
+  ctx.scale(dpr, dpr);
+
+  const width = cssWidth;
+  const height = cssHeight;
+  const cx = width * 0.5;
+  const cy = height * 0.53;
+  const radius = Math.min(width, height) * 0.42;
+
+  const bg = ctx.createRadialGradient(cx, cy - radius * 0.65, radius * 0.1, cx, cy, radius * 1.25);
+  bg.addColorStop(0, "rgba(38,64,98,0.95)");
+  bg.addColorStop(1, "rgba(11,19,31,0.98)");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, width, height);
+
+  const toPolar = (azDeg, elDeg) => {
+    const azRad = degToRad(azDeg);
+    const r = radius * (1 - clamp(elDeg, 0, 90) / 90);
+    return {
+      x: cx + r * Math.sin(azRad),
+      y: cy - r * Math.cos(azRad)
+    };
+  };
+
+  ctx.strokeStyle = "rgba(221,236,255,0.16)";
+  ctx.lineWidth = 1;
+  for (let alt = 0; alt <= 75; alt += 15) {
+    const ringR = radius * (1 - alt / 90);
+    ctx.beginPath();
+    ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(198,216,240,0.86)";
+    ctx.font = '12px "Space Mono", monospace';
+    ctx.textAlign = "center";
+    ctx.fillText(`${alt} deg`, cx, cy - ringR - 6);
+  }
+
+  for (let az = 0; az < 360; az += 30) {
+    const p = toPolar(az, 0);
+    ctx.strokeStyle = az % 90 === 0 ? "rgba(221,236,255,0.42)" : "rgba(221,236,255,0.2)";
+    ctx.lineWidth = az % 90 === 0 ? 1.6 : 1;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+  }
+
+  const cardinal = [
+    { az: 0, label: "N" },
+    { az: 90, label: "E" },
+    { az: 180, label: "S" },
+    { az: 270, label: "W" }
+  ];
+  ctx.fillStyle = "rgba(229,241,255,0.96)";
+  ctx.font = 'bold 14px "Rajdhani", sans-serif';
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (const axis of cardinal) {
+    const p = toPolar(axis.az, 0);
+    const vx = p.x - cx;
+    const vy = p.y - cy;
+    const len = Math.hypot(vx, vy) || 1;
+    ctx.fillText(axis.label, p.x + (vx / len) * 16, p.y + (vy / len) * 16);
+  }
+
+  const reachable = getReachableHorizonSamples();
+  const mount = getMountScope();
+  const mountOrigin = getMountAxisPoint(mount);
+  const minElevationDeg = getBaseObstructionMinElevationDeg(mountOrigin.z);
+  ctx.fillStyle = "rgba(94, 243, 184, 0.32)";
+  ctx.strokeStyle = "rgba(142, 250, 202, 0.24)";
+  ctx.lineWidth = 0.6;
+  for (const sample of reachable) {
+    const p00 = toPolar(sample.azDeg, sample.elDeg);
+    const p10 = toPolar(sample.azDeg + sample.azStepDeg, sample.elDeg);
+    const p11 = toPolar(sample.azDeg + sample.azStepDeg, sample.elDeg + sample.elStepDeg);
+    const p01 = toPolar(sample.azDeg, sample.elDeg + sample.elStepDeg);
+    ctx.beginPath();
+    ctx.moveTo(p00.x, p00.y);
+    ctx.lineTo(p10.x, p10.y);
+    ctx.lineTo(p11.x, p11.y);
+    ctx.lineTo(p01.x, p01.y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  state.telescopes.forEach((scope, idx) => {
+    const pointing = getScopePointing(scope);
+    if (pointing.elevationDeg < 0) return;
+    const p = toPolar(normalizeHeading(pointing.azimuthDeg), clamp(pointing.elevationDeg, 0, 90));
+    ctx.fillStyle = palette[idx % palette.length];
+    ctx.strokeStyle = "rgba(235,248,255,0.95)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  });
+
+  ctx.strokeStyle = "rgba(240,248,255,0.72)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(214,228,246,0.92)";
+  ctx.font = '12px "Space Mono", monospace';
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(`Reachable cells: ${reachable.length}`, 14, 12);
+  ctx.fillText("Reachability assumes dome can rotate to any azimuth", 14, 30);
+  ctx.fillText(`Shutter limit ${state.maxSlitOpeningDeg.toFixed(1)} deg`, 14, 48);
+  ctx.fillText(`Base wall horizon cutoff ${minElevationDeg.toFixed(1)} deg`, 14, 66);
+
+  const legendX = 14;
+  const legendY = height - 20;
+  const legendRowH = 20;
+  const legendPadX = 10;
+  const legendPadY = 10;
+  const legendTitle = "OTAs";
+  const legendItems = state.telescopes.map((scope, idx) => {
+    const visibility = evaluateScopeSlitVisibility(scope);
+    return {
+      name: scope.name,
+      color: palette[idx % palette.length],
+      reachable: visibility.clear
+    };
+  });
+
+  ctx.font = '12px "Space Mono", monospace';
+  const statusWidth = Math.max(
+    ctx.measureText("Reachable").width,
+    ctx.measureText("Blocked").width
+  );
+
+  let maxNameWidth = 0;
+  for (const item of legendItems) {
+    maxNameWidth = Math.max(maxNameWidth, ctx.measureText(item.name).width);
+  }
+
+  const legendW = Math.max(220, legendPadX * 2 + 14 + maxNameWidth + 14 + statusWidth);
+  const legendH = legendPadY * 2 + 18 + legendItems.length * legendRowH;
+  const legendTop = legendY - legendH;
+
+  ctx.fillStyle = "rgba(9,16,28,0.84)";
+  ctx.strokeStyle = "rgba(206,224,247,0.34)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(legendX, legendTop, legendW, legendH, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(226,239,255,0.95)";
+  ctx.font = 'bold 12px "Rajdhani", sans-serif';
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(legendTitle, legendX + legendPadX, legendTop + 6);
+
+  ctx.font = '12px "Space Mono", monospace';
+  legendItems.forEach((item, row) => {
+    const y = legendTop + legendPadY + 18 + row * legendRowH;
+    ctx.fillStyle = item.color;
+    ctx.fillRect(legendX + legendPadX, y + 4, 10, 10);
+    ctx.strokeStyle = "rgba(238,248,255,0.9)";
+    ctx.lineWidth = 0.8;
+    ctx.strokeRect(legendX + legendPadX, y + 4, 10, 10);
+
+    ctx.fillStyle = "rgba(226,239,255,0.94)";
+    ctx.textAlign = "left";
+    ctx.fillText(item.name, legendX + legendPadX + 16, y + 2);
+
+    ctx.textAlign = "right";
+    ctx.fillStyle = item.reachable ? "rgba(112,247,186,0.96)" : "rgba(255,182,122,0.96)";
+    ctx.fillText(item.reachable ? "Reachable" : "Blocked", legendX + legendW - legendPadX, y + 2);
+  });
+}
+
 function getLaserSegments() {
   if (!state.showLaserLine) return [];
   return state.telescopes
@@ -1936,6 +2245,7 @@ function renderAll() {
 
   drawDomeViews();
   drawMountView();
+  drawHorizonView();
   drawDiagnostics();
   ensureDomeAnimation();
 }

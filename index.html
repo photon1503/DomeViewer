@@ -44,6 +44,7 @@
         <div class="view-tabs" role="tablist" aria-label="Viewer modes">
           <button class="view-tab active" id="tab-dome" type="button" role="tab" aria-selected="true" aria-controls="panel-dome" data-view-tab="dome">Dome Views</button>
           <button class="view-tab" id="tab-mount" type="button" role="tab" aria-selected="false" aria-controls="panel-mount" data-view-tab="mount">Mount Geometry</button>
+          <button class="view-tab" id="tab-horizon" type="button" role="tab" aria-selected="false" aria-controls="panel-horizon" data-view-tab="horizon">Horizon</button>
         </div>
 
         <div class="view-tab-panel active" id="panel-dome" role="tabpanel" aria-labelledby="tab-dome" data-view-panel="dome">
@@ -93,6 +94,16 @@
             </div>
             <canvas id="mount-view" class="mount-canvas" width="960" height="630" role="img" aria-label="Interactive 3D mount and OTA geometry reference view"></canvas>
             <div id="mount-view-status" class="mount-view-status">Initializing 3D renderer...</div>
+          </div>
+        </div>
+
+        <div class="view-tab-panel" id="panel-horizon" role="tabpanel" aria-labelledby="tab-horizon" data-view-panel="horizon" hidden>
+          <div class="view-card">
+            <div class="view-title-row">
+              <h3>Reachable Horizon</h3>
+              <span class="legend">Polar alt/az chart</span>
+            </div>
+            <canvas id="horizon-view" class="horizon-canvas" width="960" height="700" role="img" aria-label="Polar horizon chart with altitude and azimuth grid"></canvas>
           </div>
         </div>
 
