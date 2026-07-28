@@ -3,28 +3,40 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dome Viewer Config</title>
+  <title>Dome Viewer Studio</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="app-shell">
-    <header class="app-header">
-      <div>
-        <h1>Dome Viewer</h1>
-        <p>Classic dome + slit geometry playground for NINA-style configuration.</p>
-      </div>
-      <div class="chip-row">
-        <span class="chip">Static Website</span>
-        <span class="chip">Realtime 2D</span>
-        <button id="toggle-settings" type="button" class="settings-toggle" aria-expanded="true" aria-controls="controls-panel">Hide Settings</button>
+  <div class="aurora-bg" aria-hidden="true">
+    <span></span>
+    <span></span>
+    <span></span>
+  </div>
+
+  <div class="container-xxl app-shell py-3 py-lg-4">
+    <header class="app-header card shell-card mb-3 mb-lg-4">
+      <div class="card-body p-3 p-lg-4 d-flex flex-column flex-lg-row justify-content-between gap-3 align-items-start align-items-lg-end">
+        <div>
+          <p class="kicker mb-1">Observatory Configurator</p>
+          <h1 class="mb-2">Dome Viewer Studio</h1>
+          <p class="subtitle mb-0">Dome slit clearance, mount geometry, and tracking diagnostics in one control room.</p>
+        </div>
+        <div class="chip-row">
+          <span class="chip">Bootstrap 5</span>
+          <span class="chip">Three.js</span>
+          <span class="chip">Realtime</span>
+          <button id="toggle-settings" type="button" class="btn btn-sm settings-toggle" aria-expanded="true" aria-controls="controls-panel">Hide Settings</button>
+        </div>
       </div>
     </header>
 
     <main class="layout" id="main-layout">
-      <aside class="controls-panel" id="controls-panel">
+      <aside class="controls-panel card shell-card" id="controls-panel">
+        <div class="card-body p-3 p-lg-4">
         <h2>Dome Settings</h2>
         <div class="control-grid" id="global-controls"></div>
 
@@ -36,40 +48,46 @@
 
         <div class="scope-header">
           <h3>OTAs</h3>
-          <button id="add-scope" type="button">+ Add OTA</button>
+          <button id="add-scope" type="button" class="btn btn-sm btn-outline-primary">+ Add OTA</button>
         </div>
         <div id="telescopes-container" class="telescopes-container"></div>
+        </div>
       </aside>
 
       <section class="viewer-panel">
-        <div class="view-tabs" role="tablist" aria-label="Viewer modes">
-          <button class="view-tab active" id="tab-dome" type="button" role="tab" aria-selected="true" aria-controls="panel-dome" data-view-tab="dome">Dome Views</button>
-          <button class="view-tab" id="tab-mount" type="button" role="tab" aria-selected="false" aria-controls="panel-mount" data-view-tab="mount">Mount Geometry</button>
-          <button class="view-tab" id="tab-horizon" type="button" role="tab" aria-selected="false" aria-controls="panel-horizon" data-view-tab="horizon">Horizon</button>
+        <div class="view-tabs card shell-card p-2" role="tablist" aria-label="Viewer modes">
+          <button class="view-tab active btn" id="tab-dome" type="button" role="tab" aria-selected="true" aria-controls="panel-dome" data-view-tab="dome">Dome Views</button>
+          <button class="view-tab btn" id="tab-mount" type="button" role="tab" aria-selected="false" aria-controls="panel-mount" data-view-tab="mount">Mount Geometry</button>
+          <button class="view-tab btn" id="tab-horizon" type="button" role="tab" aria-selected="false" aria-controls="panel-horizon" data-view-tab="horizon">Horizon</button>
         </div>
 
         <div class="view-tab-panel active" id="panel-dome" role="tabpanel" aria-labelledby="tab-dome" data-view-panel="dome">
           <div class="views-row">
-            <div class="view-card">
+            <div class="view-card card shell-card">
+              <div class="card-body p-3">
               <div class="view-title-row">
                 <h3>Top View (Dome Plan)</h3>
                 <span class="legend">N up, E right</span>
               </div>
               <canvas id="top-view" class="dome-canvas dome-top-canvas" width="840" height="840" role="img" aria-label="Top WebGL view of dome and telescopes"></canvas>
+              </div>
             </div>
 
-            <div class="view-card">
+            <div class="view-card card shell-card">
+              <div class="card-body p-3">
               <div class="view-title-row">
                 <h3>Side View (Dome Elevation)</h3>
                 <span class="legend">Cross section through center</span>
               </div>
               <canvas id="side-view" class="dome-canvas dome-side-canvas" width="1280" height="840" role="img" aria-label="Side WebGL view of dome and telescopes"></canvas>
+              </div>
             </div>
           </div>
         </div>
 
         <div class="view-tab-panel" id="panel-mount" role="tabpanel" aria-labelledby="tab-mount" data-view-panel="mount" hidden>
-          <div class="view-card">
+          <div class="view-card card shell-card">
+            <div class="card-body p-3">
             <div class="view-title-row">
               <h3>Mount Geometry</h3>
               <span class="legend">NINA reference</span>
@@ -95,26 +113,30 @@
             </div>
             <canvas id="mount-view" class="mount-canvas" width="960" height="630" role="img" aria-label="Interactive 3D mount and OTA geometry reference view"></canvas>
             <div id="mount-view-status" class="mount-view-status">Initializing 3D renderer...</div>
+            </div>
           </div>
         </div>
 
         <div class="view-tab-panel" id="panel-horizon" role="tabpanel" aria-labelledby="tab-horizon" data-view-panel="horizon" hidden>
-          <div class="view-card">
+          <div class="view-card card shell-card">
+            <div class="card-body p-3">
             <div class="view-title-row">
               <h3>Reachable Horizon</h3>
               <span class="legend">Polar alt/az chart</span>
             </div>
             <canvas id="horizon-view" class="horizon-canvas" width="960" height="700" role="img" aria-label="Polar horizon chart with altitude and azimuth grid"></canvas>
+            </div>
           </div>
         </div>
 
-        <section class="mount-track-panel" id="mount-track-panel"></section>
+        <section class="mount-track-panel card shell-card" id="mount-track-panel"></section>
 
-        <section class="diagnostics" id="diagnostics"></section>
+        <section class="diagnostics card shell-card" id="diagnostics"></section>
       </section>
     </main>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
   <script src="app.js"></script>
 </body>
 </html>
