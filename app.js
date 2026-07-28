@@ -301,6 +301,7 @@ function stopTrackingTelescope(resetId = null) {
   runtime.trackingFlipToPierSide = null;
   if (shouldRenderCards) {
     renderScopeCards();
+    renderMountTrackingPanel();
     renderAll();
   }
 }
@@ -323,35 +324,14 @@ function trackTelescopeFrame(tsMs) {
   );
   const nextPierSide = nextHourAngleDeg < 0 ? "WEST" : "EAST";
 
-  if (runtime.trackingFlipStartTsMs > 0) {
-    const flipProgress = clamp((tsMs - runtime.trackingFlipStartTsMs) / runtime.trackingFlipDurationMs, 0, 1);
-    runtime.trackingFlipProgress = flipProgress;
-    scope.hourAngleDeg = nextHourAngleDeg;
-    scope.pierSideMode = "MANUAL";
-    scope.pierSide = runtime.trackingFlipFromPierSide ?? runtime.trackingLastPierSide ?? scope.pierSide;
-    if (flipProgress >= 1) {
-      runtime.trackingFlipStartTsMs = 0;
-      runtime.trackingFlipProgress = 0;
-      runtime.trackingLastPierSide = runtime.trackingFlipToPierSide ?? nextPierSide;
-      scope.pierSide = runtime.trackingLastPierSide;
-      scope.pierSideMode = "AUTO";
-      scope.hourAngleDeg = nextHourAngleDeg;
-      runtime.trackingFlipFromPierSide = null;
-      runtime.trackingFlipToPierSide = null;
-    }
-  } else if (runtime.trackingLastPierSide !== null && nextPierSide !== runtime.trackingLastPierSide) {
-    runtime.trackingFlipStartTsMs = tsMs;
-    runtime.trackingFlipProgress = 0;
-    runtime.trackingFlipFromPierSide = runtime.trackingLastPierSide;
-    runtime.trackingFlipToPierSide = nextPierSide;
-    runtime.trackingPauseUntilMs = 0;
-    scope.hourAngleDeg = nextHourAngleDeg;
-    scope.pierSideMode = "MANUAL";
-    scope.pierSide = runtime.trackingFlipFromPierSide;
-  } else {
-    runtime.trackingFlipProgress = 0;
-    scope.hourAngleDeg = nextHourAngleDeg;
-  }
+  runtime.trackingFlipProgress = 0;
+  runtime.trackingFlipStartTsMs = 0;
+  runtime.trackingFlipFromPierSide = null;
+  runtime.trackingFlipToPierSide = null;
+  runtime.trackingLastPierSide = nextPierSide;
+  scope.hourAngleDeg = nextHourAngleDeg;
+  scope.pierSideMode = "AUTO";
+  scope.pierSide = nextPierSide;
 
   renderScopeCards();
   renderAll();
@@ -370,6 +350,7 @@ function startTrackingTelescope(scopeId) {
 
   if (isTrackingScope(scopeId)) {
     stopTrackingTelescope(scopeId);
+    renderMountTrackingPanel();
     return;
   }
 
@@ -377,22 +358,21 @@ function startTrackingTelescope(scopeId) {
 
   const hourLimitDeg = Math.min(179.5, getEqTrackingHourAngleLimitDeg(scope));
   if (hourLimitDeg <= 0.001) {
+    renderMountTrackingPanel();
     renderScopeCards();
     renderAll();
     return;
   }
 
-  const currentHaDeg = clamp(normalizeSignedDeg(Number(scope.hourAngleDeg) || 0), -hourLimitDeg, hourLimitDeg);
+  const eastLimitHaDeg = -hourLimitDeg;
   const westLimitHaDeg = hourLimitDeg;
-  if (currentHaDeg >= westLimitHaDeg - 0.001) {
-    renderScopeCards();
-    renderAll();
-    return;
-  }
+  const currentHaDeg = clamp(normalizeSignedDeg(Number(scope.hourAngleDeg) || 0), eastLimitHaDeg, westLimitHaDeg);
+  const minRunSpanDeg = 0.5;
+  const startHaDeg = westLimitHaDeg - currentHaDeg < minRunSpanDeg ? eastLimitHaDeg : currentHaDeg;
 
   runtime.trackingScopeId = scopeId;
   runtime.trackingStartTsMs = 0;
-  runtime.trackingStartHaDeg = currentHaDeg;
+  runtime.trackingStartHaDeg = startHaDeg;
   runtime.trackingEndHaDeg = westLimitHaDeg;
   const fullSpanDeg = Math.max(1e-6, 2 * hourLimitDeg);
   const runSpanDeg = Math.max(1e-6, runtime.trackingEndHaDeg - runtime.trackingStartHaDeg);
@@ -404,9 +384,10 @@ function startTrackingTelescope(scopeId) {
   runtime.trackingFlipToPierSide = null;
   runtime.trackingOriginalPierSideMode = scope.pierSideMode;
   runtime.trackingOriginalPierSide = scope.pierSide;
-  runtime.trackingLastPierSide = currentHaDeg < 0 ? "WEST" : "EAST";
+  runtime.trackingLastPierSide = startHaDeg < 0 ? "WEST" : "EAST";
   scope.pierSideMode = "AUTO";
   scope.hourAngleDeg = runtime.trackingStartHaDeg;
+  renderMountTrackingPanel();
   runtime.trackingRafId = requestAnimationFrame(trackTelescopeFrame);
 }
 
@@ -1919,11 +1900,7 @@ function getMountViewConfig() {
       counterweightShaftLengthMm: Number(mount.counterweightShaftLengthMm) || 820,
       counterweightDiameterMm: Number(mount.counterweightDiameterMm) || 170,
       pierSideMode: mount.pierSideMode,
-      pierSide: mount.pierSide,
-      trackingFlipProgress: runtime.trackingFlipProgress || 0,
-      trackingFlipDirection: runtime.trackingFlipFromPierSide === "EAST" && runtime.trackingFlipToPierSide === "WEST"
-        ? -1
-        : 1
+      pierSide: mount.pierSide
     },
     scopes: state.telescopes.map((scope) => ({
       id: scope.id,
@@ -2338,6 +2315,102 @@ function makeMountDeclinationTurnField() {
   `;
 }
 
+function makeTrackingSliderField(field, label, min, max, step, value, displayValue, sliderValue = value) {
+  return `
+    <div class="field mount-slider-field">
+      <label for="track-${field}">${label} (${Number(displayValue).toFixed(0)} deg)</label>
+      <input id="track-${field}" data-track-field="${field}" type="number"
+        min="${min}" max="${max}" step="${step}" value="${value}">
+      <input id="track-${field}-slider" data-track-field="${field}" type="range"
+        min="${min}" max="${max}" step="${step}" value="${sliderValue}" aria-label="${label} slider">
+    </div>
+  `;
+}
+
+function renderMountTrackingPanel() {
+  const host = document.getElementById("mount-track-panel");
+  const mountScope = getMountScope();
+  if (!host || !mountScope) return;
+
+  syncMountDeclinationFromTurn(mountScope);
+  const isEq = mountScope.mountType === "EQ";
+  if (!isEq) {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+
+  host.hidden = false;
+  const decTurn = getMountDeclinationTurnDeg(mountScope);
+  const decDeg = turnDegToDeclinationDeg(decTurn);
+  host.innerHTML = `
+    <div class="view-title-row">
+      <h3>Mount Tracking</h3>
+      <span class="legend">HA/DEC drive controls</span>
+    </div>
+    <div class="mount-track-grid">
+      ${makeTrackingSliderField("hourAngleDeg", "RA Axis / Hour Angle", -180, 180, 1, Number(mountScope.hourAngleDeg) || 0, Number(mountScope.hourAngleDeg) || 0)}
+      ${makeTrackingSliderField("declinationTurnDeg", "DEC Axis / Declination", -90, 270, 1, decDeg, decDeg, decTurn - 90)}
+      <div class="mount-track-actions">
+        <button id="track-mount-btn" type="button">${isTrackingScope(mountScope.id) ? "Stop Tracking" : "Track Mount"}</button>
+      </div>
+    </div>
+  `;
+
+  const syncTrackFieldInputs = (field) => {
+    for (const control of host.querySelectorAll(`[data-track-field="${field}"]`)) {
+      if (field === "hourAngleDeg") {
+        control.value = String(mountScope.hourAngleDeg);
+      } else if (field === "declinationTurnDeg") {
+        if (control.type === "range") {
+          control.value = String(getMountDeclinationTurnDeg(mountScope) - 90);
+        } else {
+          control.value = String(mountScope.declinationDeg);
+        }
+      }
+    }
+
+    const label = host.querySelector(`label[for="track-${field}"]`);
+    if (label) {
+      if (field === "hourAngleDeg") {
+        label.textContent = `RA Axis / Hour Angle (${Number(mountScope.hourAngleDeg).toFixed(0)} deg)`;
+      } else if (field === "declinationTurnDeg") {
+        label.textContent = `DEC Axis / Declination (${Number(mountScope.declinationDeg).toFixed(0)} deg)`;
+      }
+    }
+  };
+
+  for (const input of host.querySelectorAll("[data-track-field]")) {
+    input.addEventListener("input", (e) => {
+      const field = e.target.getAttribute("data-track-field");
+      if (!field) return;
+      const parsed = Number(e.target.value);
+      if (!Number.isFinite(parsed)) return;
+
+      if (field === "hourAngleDeg") {
+        mountScope.hourAngleDeg = normalizeSignedDeg(parsed);
+      } else if (field === "declinationTurnDeg") {
+        mountScope.declinationTurnDeg = normalizeTurnDeg(parsed + 90);
+        syncMountDeclinationFromTurn(mountScope);
+      }
+
+      syncTrackFieldInputs(field);
+      if (field === "declinationTurnDeg") syncTrackFieldInputs("declinationTurnDeg");
+      renderMountControls();
+      renderScopeCards();
+      renderAll();
+    });
+  }
+
+  const trackBtn = host.querySelector("#track-mount-btn");
+  if (trackBtn) {
+    trackBtn.addEventListener("click", () => {
+      startTrackingTelescope(mountScope.id);
+      renderMountTrackingPanel();
+    });
+  }
+}
+
 function makeMountSelectField(key, label, opts) {
   const mountScope = getMountScope();
   const value = mountScope?.[key];
@@ -2371,10 +2444,10 @@ function renderMountControls() {
     ${isEq ? makeMountSelectField("pierSideMode", "Meridian Flip", ["AUTO", "MANUAL"]) : ""}
     ${isEq ? makeMountSelectField("pierSide", "Pier Side", ["WEST", "EAST"]) : ""}
     ${isEq
-      ? makeMountSliderField("hourAngleDeg", "RA Axis / Hour Angle", -180, 180, 1)
+      ? makeMountNumberField("hourAngleDeg", "RA Axis / Hour Angle (deg)", -180, 180, 1)
       : makeMountNumberField("azimuth", "Azimuth (deg)", 0, 359, 1)}
     ${isEq
-      ? makeMountDeclinationTurnField()
+      ? makeMountNumberField("declinationDeg", "DEC Axis / Declination (deg)", -90, 90, 1)
       : makeMountNumberField("elevation", "Elevation (deg)", 0, 89, 1)}
   `;
 
@@ -2431,6 +2504,7 @@ function renderMountControls() {
 
       if (field === "mountType" || field === "pierSideMode") {
         renderMountControls();
+        renderMountTrackingPanel();
         renderScopeCards();
       } else {
         syncMountFieldInputs(field);
@@ -2439,6 +2513,9 @@ function renderMountControls() {
         if (["pierSide", "hourAngleDeg", "declinationDeg", "declinationTurnDeg", "azimuth", "elevation"].includes(field)) {
           renderScopeCards();
         }
+      }
+      if (["hourAngleDeg", "declinationDeg", "mountType", "pierSideMode", "pierSide"].includes(field)) {
+        renderMountTrackingPanel();
       }
       renderAll();
     });
@@ -2494,7 +2571,6 @@ function renderScopeCards() {
         ${makeNumberField(scope, "tubeLengthMm", "Tube Length (mm)", 120, 4000, 10)}
       </div>
 
-      ${isMountOwner && isEq ? `<div class="track-row"><button class="track-scope" data-id="${scope.id}" type="button">${isTrackingScope(mountConfig.id) ? "Stop Tracking" : "Track Mount"}</button></div>` : ""}
     `;
 
     wrap.appendChild(card);
@@ -2546,13 +2622,6 @@ function renderScopeCards() {
         if (field === "otaPiggybackOffsetMm") target.otaPiggybackOffsetMm = Math.max(0, target.otaPiggybackOffsetMm);
 
         renderAll();
-      });
-    }
-
-    const trackBtn = card.querySelector(".track-scope");
-    if (trackBtn) {
-      trackBtn.addEventListener("click", () => {
-        startTrackingTelescope(scope.id);
       });
     }
 
@@ -2849,6 +2918,7 @@ function init() {
   renderGlobalControls();
   renderDomeSimControls();
   renderMountControls();
+  renderMountTrackingPanel();
   wireButtons();
   renderScopeCards();
   renderAll();
